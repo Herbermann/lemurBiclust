@@ -1,0 +1,836 @@
+---
+title: "Biclusters 04 -- comparison"
+author: "Tim"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo 
+    self-contained: true   
+    page_layout: article
+execute:
+  warning: false
+  message: false
+---
+
+
+# Introduction
+In the following, we analyse the GSEA on biclusters from LEMUR and compare to the reference analysis using cell labels and pseudobulk differential expression analysis using edgeR.
+
+```{r}
+library(dplyr)
+library(data.table)
+library(SingleCellExperiment)
+library(Matrix)
+library(lemur)
+library(tidyverse)
+library(Polychrome)
+library(scico)
+library(patchwork)
+library(pheatmap)
+library(fgsea)
+library(msigdbr)
+library("progressr")
+
+# Choose folders for data and results etc.
+folder_data <- "/Users/herbermann/code/data/coculture/"
+file_name <- "coculture_effect_in_AML_5000"
+wd <- "/Users/herbermann/code/lemur_biclusters"
+cache_dir <- file.path(wd, "rds")
+
+set.seed(42)
+
+sce_all <- readRDS(paste0(folder_data, "sce_object_", file_name, ".RDS"))
+
+table_bicluster <- readRDS(file.path(cache_dir, "bicluster_gsea_table.RDS"))
+nes_mat <- readRDS(file.path(cache_dir, "bicluster_gsea_nes_mat.RDS"))
+table_pseudobulk <- readRDS(file.path(cache_dir, "pseudobulk_gsea_table.RDS"))
+
+# Let us also get all the bicluster details.
+filename <- file.path(cache_dir, "fit_nmf.RDS")
+nmf_fit <- readRDS(filename)
+
+biclusters <- nmf_fit$biclusters
+null_h <- nmf_fit$null_h
+null_w_pos <- nmf_fit$null_w_pos
+null_w_neg <- nmf_fit$null_w_neg
+
+W <- biclusters@w
+H <- biclusters@h
+
+n_genes <- nrow(W)/2
+W_pos <- W[1:n_genes, ]
+W_neg  <- W[(n_genes+1):nrow(W), ]
+
+fit <- readRDS(file.path(cache_dir, "lemur_essi_fit.rds"))
+de_matrix <- as.matrix(assay(fit$training_data, "DE"))
+
+rownames(W_pos) <- rownames(de_matrix)
+rownames(W_neg) <- rownames(de_matrix)
+
+# Getting cell level labels and label bicluster members
+celltype_map <- setNames(sce_all$clusters_renamed, colnames(sce_all))
+patient_map <- setNames(sce_all$individual, colnames(sce_all))
+
+
+
+# Make all assignments of cell membership to biclusters
+null_h <- null_h[3,]
+null_w_pos <- null_w_pos[3,]
+null_w_neg <- null_w_neg[3,]
+
+n_bic <- nrow(H)
+
+bic_cells <- lapply(1:n_bic, function(i){
+  H[i,] > null_h[i]
+})
+
+bic_up <- lapply(1:n_bic, function(i){
+  W_pos[,i] > null_w_pos[i]
+})
+
+bic_down <- lapply(1:n_bic, function(i){
+  W_neg[,i] > null_w_neg[i]
+})
+
+bic_genes <- Map(function(up, down) up | down, bic_up, bic_down)
+```
+
+
+# Comparisons
+
+## Bicluster overlap
+
+```{r}
+jaccard_with_logic <- function(A, B) {
+  stopifnot(length(A) == length(B))
+  denom <- sum(A | B)
+  if (denom == 0) return(NA_real_)
+  sum(A & B) / denom
+}
+
+n_bic <- length(bic_cells)
+
+jaccard_cells <- matrix(
+  NA_real_,
+  nrow = n_bic,
+  ncol = n_bic,
+  dimnames = list(paste0("Bic_", seq_len(n_bic)),
+                  paste0("Bic_", seq_len(n_bic)))
+)
+
+for (i in seq_len(n_bic)) {
+  for (j in seq_len(n_bic)) {
+    jaccard_cells[i, j] <- jaccard_with_logic(bic_cells[[i]], bic_cells[[j]])
+  }
+}
+
+n_bic <- length(bic_genes)
+
+jaccard_genes <- matrix(
+  NA_real_,
+  nrow = n_bic,
+  ncol = n_bic,
+  dimnames = list(paste0("Bic_", seq_len(n_bic)),
+                  paste0("Bic_", seq_len(n_bic)))
+)
+
+for (i in seq_len(n_bic)) {
+  for (j in seq_len(n_bic)) {
+    jaccard_genes[i, j] <- jaccard_with_logic(bic_genes[[i]], bic_genes[[j]])
+  }
+}
+
+
+pheatmap(jaccard_cells)
+pheatmap(jaccard_genes)
+```
+
+## Bicluster composition
+First, how do known annotations and labels distribute over biclusters?
+
+```{r}
+#Investigate connection of biclusters to known annotations
+# --- align all objects to the same cells ---
+common_cells <- Reduce(intersect, c(
+  list(names(celltype_map), names(patient_map)),
+  lapply(bic_cells, names)
+))
+
+celltype_map2 <- celltype_map[common_cells]
+patient_map2   <- patient_map[common_cells]
+bic_cells2     <- lapply(bic_cells, function(x) x[common_cells])
+
+# --- cell type composition within each bicluster ---
+bic_celltypes <- lapply(seq_along(bic_cells2), function(i) {
+  celltype_map2[bic_cells2[[i]]]
+})
+
+plot_df <- bind_rows(lapply(seq_along(bic_celltypes), function(i) {
+  ct <- bic_celltypes[[i]]
+
+  df <- as.data.frame(table(ct))
+  colnames(df) <- c("celltype", "n")
+  df$bic <- paste0("Bic ", i)
+  df
+})) %>%
+  filter(!is.na(celltype)) %>%
+  group_by(bic) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+
+ggplot(plot_df, aes(x = bic, y = prop, fill = celltype)) +
+  geom_col(width = 0.8) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Fraction of cells in bicluster",
+    fill = "Cell type",
+    title = "Cell type composition across biclusters"
+  ) +
+  theme_minimal(base_size = 13)
+
+# --- optional: patient composition within each bicluster ---
+bic_patient <- lapply(seq_along(bic_cells2), function(i) {
+  patient_map2[bic_cells2[[i]]]
+})
+
+plot_df_patient <- bind_rows(lapply(seq_along(bic_patient), function(i) {
+  df <- as.data.frame(table(patient = bic_patient[[i]]))
+  colnames(df) <- c("patient", "n")
+  df$bic <- paste0("Bic ", i)
+  df
+})) %>%
+  filter(!is.na(patient)) %>%
+  group_by(bic) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+
+ggplot(plot_df_patient, aes(x = bic, y = prop, fill = patient)) +
+  geom_col(width = 0.8) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Fraction of cells in bicluster",
+    fill = "Patient",
+    title = "Patient composition across biclusters"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+While biclusters vary in cell- and patient composition, there is no strong association of certain biclusterspatient labels. This might be encouraging, as biclusters do identify gene programmes, and therefore, these appear to be programmes orthogonal to patients. A stronger association with cell types is expected in that case.
+
+On a related note, we check how a given cell label is made up from which biclusters. Note that this does not have to add up to 1, as a cell can belong to multiple biclusters.
+
+```{r}
+# --- bicluster composition within each cell type ---
+celltypes <- levels(celltype_map2)
+
+celltype_to_bic <- lapply(celltypes, function(ct) {
+  ct_vec <- celltype_map2 == ct
+  
+  sapply(bic_cells2, function(bic_vec) {
+    sum(bic_vec & ct_vec) / sum(ct_vec)
+  })
+})
+
+celltype_to_bic <- do.call(cbind, celltype_to_bic)
+colnames(celltype_to_bic) <- celltypes
+rownames(celltype_to_bic) <- paste0("Bic_", seq_along(bic_cells2))
+
+celltype_to_bic <- t(celltype_to_bic)
+
+plot_df <- as.data.frame(celltype_to_bic)
+plot_df$bic <- rownames(plot_df)
+
+plot_df_long <- pivot_longer(
+  plot_df,
+  cols = -bic,
+  names_to = "celltype",
+  values_to = "prop"
+)
+
+ggplot(plot_df_long, aes(x = bic, y = prop, fill = celltype)) +
+  geom_col(width = 0.8) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Fraction of cell type in bicluster",
+    fill = "Cell type",
+    title = "Bicluster coverage of each cell type (P(bic | celltype))"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+
+
+
+We may also investigate Jaccard overlaps between biclusters and cell types, revealing potentially strong association of cell types and biclusters.
+```{r}
+jaccard_with_logic <- function(A, B) {
+  stopifnot(length(A) == length(B))
+  denom <- sum(A | B)
+  if (denom == 0) return(NA_real_)
+  sum(A & B) / denom
+}
+
+# make sure both are aligned to the same cells
+common_cells <- intersect(names(celltype_map), names(bic_cells[[1]]))
+celltype_map2 <- celltype_map[common_cells]
+bic_cells2 <- lapply(bic_cells, function(x) x[common_cells])
+
+celltypes <- levels(celltype_map2)
+
+jaccard_matrix <- sapply(bic_cells2, function(bic_vec) {
+  sapply(celltypes, function(ct) {
+    ct_vec <- celltype_map2 == ct
+    jaccard_with_logic(bic_vec, ct_vec)
+  })
+})
+
+# nice labels
+rownames(jaccard_matrix) <- celltypes
+colnames(jaccard_matrix) <- paste0("Bic_", seq_along(bic_cells2))
+
+pheatmap(jaccard_matrix)
+```
+
+# Keep it simple
+
+To tame the programmes (appearing often in multiple biclusters) over biclusters, we take a matrix of (pathways, biclusters) and PCA it to find the main axis of variation
+```{r}
+pca_nes <- prcomp(nes_mat,center = TRUE, scale. = TRUE)
+plot(pca_nes$x[,1], pca_nes$x[,2])
+
+summary(pca_nes)
+```
+
+We see most variation is captured by PC1-PC4 (around 70%), and perhaps some moderate contribtuion also from PC5-PC7. Those should correspond to interpretable combinations of programmes enriched over combinations of biclusters
+
+
+```{r}
+pc1 <- pca_nes$rotation[,1]
+pc1_pos <- paste(capture.output(head(sort(pc1, decreasing = TRUE), 12)), collapse = "<br>")
+pc1_neg <- paste(capture.output(head(sort(pc1), 12)), collapse = "<br>")
+
+pc2 <- pca_nes$rotation[,2]
+pc2_pos <- paste(capture.output(head(sort(pc2, decreasing = TRUE), 12)), collapse = "<br>")
+pc2_neg <- paste(capture.output(head(sort(pc2), 12)), collapse = "<br>")
+
+pc3 <- pca_nes$rotation[,3]
+pc3_pos <- paste(capture.output(head(sort(pc3, decreasing = TRUE), 12)), collapse = "<br>")
+pc3_neg <- paste(capture.output(head(sort(pc3), 12)), collapse = "<br>")
+
+pc4 <- pca_nes$rotation[,4]
+pc4_pos <- paste(capture.output(head(sort(pc4, decreasing = TRUE), 12)), collapse = "<br>")
+pc4_neg <- paste(capture.output(head(sort(pc4), 12)), collapse = "<br>")
+```
+
+
+Asking chatGPT because I do not know any biology:
+
+#### PC1
+
+**POSITIVE LOADING** (pos. NES): differentiation / structural / lineage-associated programs
+
+**NEGATIVE LOADINGS** (neg. NES): Differentiated, structural, lineage-associated cells
+
+#### PC2
+
+**POSITIVE LOADING** (pos. NES): metabolic / biosynthetic / maintenance state
+
+**NEGATIVE LOADINGS** (neg. NES): signaling / structural / functional communication state
+
+#### PC3
+
+**POSITIVE LOADING** (pos. NES): signaling / stress / transition
+**NEGATIVE LOADINGS** (neg. NES): metabolically specialized / functional
+
+#### PC4
+
+**POSITIVE LOADING** (pos. NES): immune-driven, cytokine signaling–dominant state
+**NEGATIVE LOADINGS** (neg. NES): growth / metabolic / structural state
+
+
+
+# In depth (this is an awful lot of programmes)
+
+## Monocytes and BIC 2, 5, 11
+
+Biclusters 2, 5, and 11 are mostly made up from Monocytes, especially 5 and 11. We can check results of GSEA on BIC 5 and 11 as well as Monocytes pseudobulk to assess what overlap and what new information LEMUR + biclustering reveals.
+
+```{r}
+bic2_cells  <- names(bic_cells[[2]])[bic_cells[[2]]]
+bic5_cells  <- names(bic_cells[[5]])[bic_cells[[5]]]
+bic11_cells <- names(bic_cells[[11]])[bic_cells[[11]]]
+
+mono_cells <- names(celltype_map)[celltype_map == "Monocyte"]
+
+mono_pathways <- table_pseudobulk |> filter(cell_type == "Monocyte") |>
+    select(cell_type, pathway, NES, padj)
+
+bic2_pathways <- table_bicluster |> filter(bicluster == 2) |>
+    select(bicluster, pathway, NES, padj)
+bic5_pathways <- table_bicluster |> filter(bicluster == 5) |>
+    select(bicluster, pathway, NES, padj)
+bic11_pathways <- table_bicluster |> filter(bicluster == 11) |>
+    select(bicluster, pathway, NES, padj)
+
+print("----BIC2----")
+print(bic2_pathways)
+print("----BIC5----")
+print(bic5_pathways)
+print("----BIC11---")
+print(bic11_pathways)
+print("----MONO----")
+print(mono_pathways)
+```
+
+Not entirely sure how to interpret this but...
+
+- Monocytes appear to be showing interferon/inflammatory programmes
+- So do BIC 5 and 11, however there is a secondary programme
+    - BIC 5 something epithelial
+    - BIC 11 some sort of metabolic activation
+- We found different cell states within a label!
+
+
+
+## HSPC & BIC 1, 3, 6, 7, 12
+These bicluster are made up of large fractions of HSPC. Let us compare those to HSPC pseudobulk GSEA.
+
+
+```{r}
+bic1_cells  <- names(bic_cells[[1]])[bic_cells[[1]]]
+bic3_cells  <- names(bic_cells[[3]])[bic_cells[[3]]]
+bic6_cells <- names(bic_cells[[6]])[bic_cells[[6]]]
+bic7_cells <- names(bic_cells[[7]])[bic_cells[[7]]]
+bic12_cells <- names(bic_cells[[12]])[bic_cells[[12]]]
+
+hspc_cells <- names(celltype_map)[celltype_map == "HSPC"]
+
+hspc_pathways <- table_pseudobulk |> filter(cell_type == "HSPC") |>
+    select(cell_type, pathway, NES, padj)
+
+bic1_pathways <- table_bicluster |> filter(bicluster == 1) |>
+    select(bicluster, pathway, NES, padj)
+bic3_pathways <- table_bicluster |> filter(bicluster == 3) |>
+    select(bicluster, pathway, NES, padj)
+bic6_pathways <- table_bicluster |> filter(bicluster == 6) |>
+    select(bicluster, pathway, NES, padj)
+bic7_pathways <- table_bicluster |> filter(bicluster == 7) |>
+    select(bicluster, pathway, NES, padj)
+bic12_pathways <- table_bicluster |> filter(bicluster == 12) |>
+    select(bicluster, pathway, NES, padj)
+
+print("----BIC1----")
+print(bic1_pathways)
+print("----BIC3----")
+print(bic3_pathways)
+print("----BIC6---")
+print(bic6_pathways)
+print("----BIC7---")
+print(bic7_pathways)
+print("----BIC12---")
+print(bic12_pathways)
+print("----HSPC----")
+print(hspc_pathways)
+```
+
+```{r}
+#bic6_cells <- bic_cells[["BIC6"]]   # or bic_cells[[6]]
+hspc_cells <- celltype_map == "HSPC"
+
+cell_ids <- colnames(de_matrix)
+
+hspc_cells <- celltype_map[cell_ids] == "HSPC"
+bic6_idx   <- cell_ids %in% bic6_cells
+
+target_idx <- which(bic6_idx & hspc_cells)
+background_idx <- which(hspc_cells & !bic6_idx)
+
+score_bicluster_custom <- function(de_matrix, in_idx, out_idx, eps = 1e-8) {
+  x_in  <- de_matrix[, in_idx, drop = FALSE]
+  x_out <- de_matrix[, out_idx, drop = FALSE]
+
+  score <- rowMeans(x_in, na.rm = TRUE) - rowMeans(x_out, na.rm = TRUE)
+
+  s_in  <- matrixStats::rowSds(as.matrix(x_in), na.rm = TRUE)
+  s_out <- matrixStats::rowSds(as.matrix(x_out), na.rm = TRUE)
+  pooled <- sqrt((s_in^2 + s_out^2) / 2)
+
+  score <- score / (pooled + eps)
+  sort(score, decreasing = TRUE)
+}
+
+scores <- score_bicluster_custom(
+  de_matrix,
+  in_idx  = target_idx,
+  out_idx = background_idx
+)
+
+msig <- msigdbr(species = "Homo sapiens", category = "H")
+pathways <- split(msig$gene_symbol, msig$gs_name)
+
+res <- fgsea(pathways = pathways, stats = scores)
+res <- res[order(res$padj), ]
+head(res, 10)
+```
+
+```{r}
+library(scater)
+library(scran)
+library(igraph)
+
+sce <- fit$training_data
+hspc_sce <- sce[, sce$colData$clusters_renamed == "HSPC"]
+
+
+if (!"logcounts" %in% assayNames(hspc_sce)) {
+  hspc_sce <- logNormCounts(hspc_sce)
+}
+
+set.seed(1)
+hspc_sce <- runPCA(hspc_sce, ncomponents = 20)
+
+g <- buildSNNGraph(hspc_sce, use.dimred = "PCA", k = 20)
+cl <- cluster_louvain(g)
+
+cd <- colData(hspc_sce)
+cd[["hspc_cluster"]] <- factor(cl$membership)
+colData(hspc_sce) <- cd
+
+bic6_in_hspc <- colnames(hspc_sce) %in% bic6_cells
+
+tab <- table(
+  cluster = colData(hspc_sce)[["hspc_cluster"]],
+  bic6    = bic6_in_hspc
+)
+tab
+prop.table(tab, 1)
+
+```
+
+```{r}
+library(fgsea)
+library(msigdbr)
+library(dplyr)
+
+## ------------------------------------------------------------
+## 1) HSPC-only object and aligned cell IDs
+## ------------------------------------------------------------
+# HSPC subset
+sce <- fit$training_data
+hspc_idx <- colData(sce)[["clusters_renamed"]] == "HSPC"
+hspc_sce <- sce[, hspc_idx]
+
+# cell IDs for this subset
+cell_ids <- colnames(hspc_sce)
+
+# cluster labels for this subset
+clusters <- colData(hspc_sce)[["hspc_cluster"]]
+
+## hspc_sce is already the HSPC subset
+
+## cluster membership from the graph clustering
+cluster_membership <- cl$membership
+
+## sanity check
+length(cluster_membership)
+ncol(hspc_sce)
+
+## cluster 10 inside HSPCs
+cluster10_idx <- as.integer(cluster_membership) == 10
+
+## BIC6 inside HSPCs
+bic6_idx <- colnames(hspc_sce) %in% bic6_cells
+
+## checks
+stopifnot(length(cluster10_idx) == ncol(hspc_sce))
+stopifnot(length(bic6_idx) == ncol(hspc_sce))
+
+## ------------------------------------------------------------
+## 2) Pathway database
+## ------------------------------------------------------------
+msig <- msigdbr(species = "Homo sapiens", category = "H")
+pathways <- split(msig$gene_symbol, msig$gs_name)
+
+## ------------------------------------------------------------
+## 3) Generic scoring function
+## ------------------------------------------------------------
+score_group_vs_rest <- function(de_matrix, in_idx, out_idx, eps = 1e-8) {
+  stopifnot(ncol(de_matrix) == length(in_idx))
+  stopifnot(ncol(de_matrix) == length(out_idx))
+
+  x_in  <- de_matrix[, in_idx, drop = FALSE]
+  x_out <- de_matrix[, out_idx, drop = FALSE]
+
+  score <- rowMeans(x_in, na.rm = TRUE) - rowMeans(x_out, na.rm = TRUE)
+
+  s_in  <- matrixStats::rowSds(as.matrix(x_in), na.rm = TRUE)
+  s_out <- matrixStats::rowSds(as.matrix(x_out), na.rm = TRUE)
+  pooled <- sqrt((s_in^2 + s_out^2) / 2)
+
+  score <- score / (pooled + eps)
+  sort(score, decreasing = TRUE)
+}
+
+## ------------------------------------------------------------
+## 4) Define contrasts
+## ------------------------------------------------------------
+expr <- assay(hspc_sce, "logcounts")
+
+cluster10_scores <- score_group_vs_rest(
+  de_matrix = expr,
+  in_idx = cluster10_idx,
+  out_idx = !cluster10_idx
+)
+
+bic6_scores <- score_group_vs_rest(
+  de_matrix = expr,
+  in_idx = bic6_idx,
+  out_idx = !bic6_idx
+)
+
+## ------------------------------------------------------------
+## 5) GSEA
+## ------------------------------------------------------------
+res_cluster10 <- fgsea(pathways = pathways, stats = cluster10_scores)
+res_cluster10 <- res_cluster10[order(res_cluster10$padj), ]
+
+res_bic6 <- fgsea(pathways = pathways, stats = bic6_scores)
+res_bic6 <- res_bic6[order(res_bic6$padj), ]
+
+head(res_cluster10, 10)
+head(res_bic6, 10)
+```
+
+
+## GMP & BIC 4, 10
+
+```{r}
+bic4_cells  <- names(bic_cells[[1]])[bic_cells[[4]]]
+bic10_cells  <- names(bic_cells[[3]])[bic_cells[[10]]]
+
+gmp_cells <- names(celltype_map)[celltype_map == "GMP_"]
+
+gmp_pathways <- table_pseudobulk |> filter(cell_type == "GMP_") |>
+    select(cell_type, pathway, NES, padj)
+
+bic4_pathways <- table_bicluster |> filter(bicluster == 4) |>
+    select(bicluster, pathway, NES, padj)
+bic10_pathways <- table_bicluster |> filter(bicluster == 10) |>
+    select(bicluster, pathway, NES, padj)
+
+print("----BIC4----")
+print(bic1_pathways)
+print("----BIC10---")
+print(bic3_pathways)
+print("----GMP-----")
+print(gmp_pathways)
+```
+
+## pDC $ BIC 9, 7, 2, 15
+
+```{r}
+bic7_cells  <- names(bic_cells[[7]])[bic_cells[[7]]]
+bic9_cells  <- names(bic_cells[[9]])[bic_cells[[9]]]
+bic15_cells  <- names(bic_cells[[15]])[bic_cells[[15]]]
+
+pdc_cells <- names(celltype_map)[celltype_map == "pDC_"]
+
+pdc_pathways <- table_pseudobulk |> filter(cell_type == "pDC_") |>
+    select(cell_type, pathway, NES, padj)
+
+bic7_pathways <- table_bicluster |> filter(bicluster == 7) |>
+    select(bicluster, pathway, NES, padj)
+bic9_pathways <- table_bicluster |> filter(bicluster == 9) |>
+    select(bicluster, pathway, NES, padj)
+bic15_pathways <- table_bicluster |> filter(bicluster == 15) |>
+    select(bicluster, pathway, NES, padj)
+
+print("----BIC7----")
+print(bic7_pathways)
+print("----BIC9----")
+print(bic9_pathways)
+print("----BIC15---")
+print(bic15_pathways)
+print("----pDC-----")
+print(pdc_pathways)
+```
+
+
+- pDC is characterised by strong interferon response
+- found in pseudobulk
+- LEMUR reveals substructure
+    - BIC 7 with high activity
+    - BIC 9 low metabolic subset
+    - BIC 15 cycling subset
+
+
+
+
+```{r}
+library(edgeR)
+library(fgsea)
+library(msigdbr)
+
+patient_col   <- "individual"
+condition_col <- "coculture"
+ref_condition <- "BM_only"
+alt_condition <- "Coculture"
+
+msig <- msigdbr(species = "Homo sapiens", category = "H")
+pathways <- split(msig$gene_symbol, msig$gs_name)
+
+## ------------------------------------------------------------
+## Helper: pseudobulk condition DE on an arbitrary SCE subset
+## ------------------------------------------------------------
+run_condition_de_gsea <- function(sce_subset, patient_col, condition_col,
+                                   ref_condition, alt_condition,
+                                   min_samples = 3) {
+  meta <- as.data.frame(colData(sce_subset))
+  meta$individual <- factor(meta[[patient_col]])
+  meta$condition  <- factor(meta[[condition_col]], levels = c(ref_condition, alt_condition))
+
+  ## check we have enough samples per condition
+  tab <- table(meta$condition)
+  if (any(tab[c(ref_condition, alt_condition)] < min_samples)) {
+    warning("Not enough samples per condition: ", paste(tab, collapse = "/"))
+    return(NULL)
+  }
+
+  ## manual pseudobulk aggregation
+  counts    <- assay(sce_subset, "counts")
+  meta$group <- paste0(meta$individual, "__", meta$condition)
+  groups     <- unique(meta$group)
+
+  pb_counts <- sapply(groups, function(g) {
+    idx <- which(meta$group == g)
+    Matrix::rowSums(counts[, idx, drop = FALSE])
+  })
+
+  pb_meta <- data.frame(
+    group      = groups,
+    individual = factor(sub("__.*", "", groups)),
+    condition  = factor(sub(".*__", "", groups), levels = c(ref_condition, alt_condition))
+  )
+
+  ## edgeR DE
+  dge    <- DGEList(counts = pb_counts)
+  design <- model.matrix(~ individual + condition, data = pb_meta)
+
+  keep <- filterByExpr(dge, design = design)
+  dge  <- dge[keep, , keep.lib.sizes = FALSE]
+  dge  <- calcNormFactors(dge)
+  dge  <- estimateDisp(dge, design)
+
+  fit       <- glmQLFit(dge, design)
+  coef_name <- grep("^condition", colnames(design), value = TRUE)
+  qlf       <- glmQLFTest(fit, coef = coef_name)
+  tt        <- topTags(qlf, n = Inf)$table
+
+  pval  <- pmax(tt$PValue, .Machine$double.xmin)
+  ranks <- sort(sign(tt$logFC) * (-log10(pval)), decreasing = TRUE)
+  names(ranks) <- rownames(tt)
+
+  gsea <- fgsea(pathways = pathways, stats = ranks, minSize = 10, maxSize = 500)
+  setNames(gsea$NES, gsea$pathway)
+}
+
+## ------------------------------------------------------------
+## Run on each subpopulation and global HSPC
+## ------------------------------------------------------------
+
+## sanity check cell numbers
+cat("BIC6 cells per donor x condition:\n")
+print(table(colData(hspc_sce)[bic6_idx, patient_col],
+            colData(hspc_sce)[bic6_idx, condition_col]))
+
+cat("LouvC10 cells per donor x condition:\n")
+print(table(colData(hspc_sce)[cluster10_idx, patient_col],
+            colData(hspc_sce)[cluster10_idx, condition_col]))
+
+hspc_sce_plain <- as(hspc_sce, "SingleCellExperiment")
+
+nes_bic6_cond    <- run_condition_de_gsea(hspc_sce_plain[, bic6_idx],
+                                           patient_col, condition_col,
+                                           ref_condition, alt_condition)
+
+nes_louvain_cond <- run_condition_de_gsea(hspc_sce_plain[, cluster10_idx],
+                                           patient_col, condition_col,
+                                           ref_condition, alt_condition)
+
+## global HSPC from cache
+gsea_results  <- readRDS(file.path(cache_dir, "pseudobulk_gsea_results.rds"))
+nes_global_hspc <- setNames(
+  gsea_results[["HSPC"]]$gsea$NES,
+  gsea_results[["HSPC"]]$gsea$pathway
+)
+
+## ------------------------------------------------------------
+## Align
+## ------------------------------------------------------------
+shared <- Reduce(intersect, list(names(nes_bic6_cond),
+                                  names(nes_louvain_cond),
+                                  names(nes_global_hspc)))
+cat("Shared pathways:", length(shared), "\n")
+
+cmp_df <- tibble(
+  pathway         = shared,
+  NES_bic6        = nes_bic6_cond[shared],
+  NES_louvain     = nes_louvain_cond[shared],
+  NES_global_hspc = nes_global_hspc[shared]
+)
+
+## ------------------------------------------------------------
+## Plot 1: BIC6 vs global
+## ------------------------------------------------------------
+cmp_df_outliers1 <- cmp_df |> filter(abs(NES_bic6 - NES_global_hspc) > 1)
+
+p1 <- ggplot(cmp_df, aes(NES_global_hspc, NES_bic6,
+                          label = sub("^HALLMARK_", "", pathway))) +
+  geom_point(aes(color = abs(NES_bic6 - NES_global_hspc)), size = 2) +
+  geom_abline(linetype = "dashed") +
+  ggrepel::geom_text_repel(data = cmp_df_outliers1, size = 3) +
+  scale_color_viridis_c() +
+  labs(x = "NES global HSPC", y = "NES BIC6 (condition effect)",
+       color = "|ΔNES|",
+       title = "What does restricting to BIC6 add?")
+
+## ------------------------------------------------------------
+## Plot 2: BIC6 vs LouvC10
+## ------------------------------------------------------------
+cmp_df_outliers2 <- cmp_df |> filter(abs(NES_bic6 - NES_louvain) > 1)
+
+p2 <- ggplot(cmp_df, aes(NES_louvain, NES_bic6,
+                          label = sub("^HALLMARK_", "", pathway))) +
+  geom_point(size = 2) +
+  geom_abline(linetype = "dashed") +
+  ggrepel::geom_text_repel(data = cmp_df_outliers2, size = 3) +
+  labs(x = "NES LouvC10 (condition effect)",
+       y = "NES BIC6 (condition effect)",
+       title = "BIC6 vs LouvC10: same condition biology?")
+
+p1 | p2
+
+## ------------------------------------------------------------
+## Plot 3: heatmap of all three
+## ------------------------------------------------------------
+cmp_mat <- cmp_df |>
+  column_to_rownames("pathway") |>
+  as.matrix()
+
+rownames(cmp_mat) <- sub("^HALLMARK_", "", rownames(cmp_mat))
+
+pheatmap(
+  t(cmp_mat),
+  cluster_cols = TRUE,
+  cluster_rows = FALSE,
+  scale = "none",
+  border_color = NA,
+  main = "Condition NES: global HSPC vs BIC6 vs LouvC10"
+)
+
+```

@@ -1,0 +1,484 @@
+---
+title: "Biclusters 01 -- prepare and fit NMF"
+author: "Tim"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo 
+    self-contained: true   
+execute:
+  warning: false
+  message: false
+---
+
+
+```{r}
+library(dplyr)
+library(data.table)
+library(SingleCellExperiment)
+library(Matrix)
+library(lemur)
+library(tidyverse)
+library(Polychrome)
+library(scico)
+library(patchwork)
+library("progressr")
+set.seed(42)
+```
+
+# Prepare LEMUR
+Load or compute LEMUR fit.
+```{r}
+folder_data <- "/Users/herbermann/code/data/coculture/"
+file_name <- "coculture_effect_in_AML_5000"
+wd <- "/Users/herbermann/code/lemur_biclusters"
+cache_dir <- file.path(wd, "rds")
+```
+
+```{r}
+lemur_fit_file <- file.path(cache_dir, "lemur_essi_fit.rds")
+
+FLAG_fit_lemur <- TRUE
+
+if (FLAG_fit_lemur == TRUE){
+  if (file.exists(lemur_fit_file)) {
+    fit <- readRDS(lemur_fit_file)
+  } else {
+    
+    sce_all <- readRDS(paste0(folder_data, "sce_object_", file_name, ".RDS"))
+    
+    n_latents <- 20
+    fit <- lemur(sce_all, ~coculture, n_embedding = n_latents, test_fraction = 0.5)
+    fit <- align_by_grouping(fit, grouping = colData(fit)[, "clusters_renamed"])
+    fit <- test_de(fit, contrast = cond(coculture = "Coculture") - cond(coculture = "BM_only"))
+    
+    saveRDS(fit, lemur_fit_file)
+  }
+}
+```
+
+# Preparing differential gene expression matrix
+
+We modify the gene expression matrix to make biclustering more stable.
+First, split by up- and downregulation for NMF.
+Next, we compute some quantiles, and use them for hyperparameters. For now, we use $x \rightarrow \mathrm{tanh}(wx)$, where $w = 2/Q_{95\%}$ to soft clip strong outliers. Other approaches should be tested
+
+- No soft clipping
+- zero clipping to reduce noise (recall it was exaggerated from imperfect LEMUR fit)
+  - thresholding
+  - sigmoid-like
+
+```{r}
+library(Matrix)
+library("RcppML")
+options(RcppML.threads = 0)
+package.version("RcppML")
+
+de_matrix <- as.matrix(assay(fit$training_data, "DE"))
+
+de_pos <- pmax(de_matrix, 0.)   # genes x cells, upregulation only
+de_neg <- pmax(-de_matrix, 0.)  # genes x cells, downregulation only
+
+quant_pos <- quantile(de_pos, c(0.5, 0.75, 0.9, 0.95))
+quant_neg <- quantile(de_neg, c(0.5, 0.75, 0.9, 0.95))
+
+de_pos <- tanh(2/quant_pos[4] * de_pos)
+de_neg <- tanh(2/quant_neg[4] * de_neg)
+
+de_pos <- Matrix(de_pos, sparse=TRUE)
+de_neg <- Matrix(de_neg, sparse=TRUE)
+
+pos_orig <- rownames(de_pos)
+neg_orig <- rownames(de_neg)
+
+rownames(de_pos) <- paste0("up_", make.unique(pos_orig))
+rownames(de_neg) <- paste0("down_", make.unique(neg_orig))
+
+de <- rbind(de_pos, de_neg)
+
+```
+
+
+# Finding factors
+
+The finding of the correct number of factors is somewhat non-trivial, but some heuristic approaches might be feasible.
+
+For now, we use the LEMUR training data, and take a small fraction as validation. Then, we increase $k$ and monitor the reconstruction error on the validation to find optimal $k$. This is optimal reconstruction and in general will differ from optimal factors to extract biclusters!
+
+My conjecture is $\# \mathrm{bic} \leqslant k_\mathrm{NMF}$. Meaning less than optimal $k$ should identify all meaningful biclusters already. More importantly perhaps, meaningful biclusters should also appear at higher $k$, but potentially split into multiple clusters. Depending on downstream analysis this is not necessarily an issue, see later notebooks!
+
+I include also a second metric, dubbed genespace stability. In short, it is a measure of how different the gene space spanned by the loadings matrix is for repeated random decompositions. When this quantitiy weakens, it might indicate the fitting on unstable features/noise. It seems overall well-behaved and might no indicate much additional information (although it seems to deterioate around the same $k$ as the validation error.)
+
+What might be useful additional metrics:
+
+- Noise floor: Find reconstruction error for the null-distributions (more costly though)
+- Diagonal values vs $k$, although NMF seems to spread over $k$ and is generally less stable than PCA in that regard.
+- ...
+
+```{r}
+
+genespace_stability <- function(fit1, fit2) {
+  # weight W columns by their factor importance
+  W1 <- fit1@w %*% diag(fit1@d)
+  W2 <- fit2@w %*% diag(fit2@d)
+  
+  # remove dead factors
+  W1 <- W1[, colSums(W1) > 0, drop = FALSE]
+  W2 <- W2[, colSums(W2) > 0, drop = FALSE]
+  
+  # now QR on the weighted W
+  Q1 <- qr.Q(qr(W1))
+  Q2 <- qr.Q(qr(W2))
+  
+  decomp <- svd(t(Q1) %*% Q2)
+  theta2 <- acos(decomp@d)^2
+  sqrt(theta2)/(length(theta2)* 0.5 * 3.1415)
+}
+
+
+
+
+find_factors <- function(
+    matrix,
+    ks,
+    n_restarts      = 2,
+    test_fraction   = 0.,
+    L1              = c(0., 0.),
+    tol             = 1e-4,
+    show_plot       = FALSE,
+    stability_thrsh = 0.9
+) {
+  p <- progressr::progressor(steps = length(ks) * n_restarts)
+
+  use_cv <- test_fraction > 0
+  if (use_cv) {
+    # eligible pool computed once; mask resampled per restart
+    nz_idx <- which(matrix != 0, arr.ind = TRUE)
+    n_test <- round(nrow(nz_idx) * test_fraction)
+  }
+
+  results <- lapply(ks, function(k) {
+
+    fits_and_errors <- lapply(seq_len(n_restarts), function(i) {
+
+      if (use_cv) {
+        # fresh mask per restart
+        test_coords  <- nz_idx[sample.int(nrow(nz_idx), n_test), , drop = FALSE]
+        test_mask    <- Matrix::sparseMatrix(
+          i    = test_coords[, 1],
+          j    = test_coords[, 2],
+          x    = 1,
+          dims = dim(matrix)
+        )
+        train_matrix <- matrix
+        train_matrix[test_coords] <- 0
+        if (inherits(matrix, "sparseMatrix"))
+          train_matrix <- methods::as(train_matrix, "dgCMatrix")
+      } else {
+        train_matrix <- matrix
+      }
+
+      fit <- nmf(train_matrix, k = k, seed = i, L1 = L1, tol = tol)
+
+      err <- if (use_cv) {
+        evaluate(fit, data = matrix, mask = test_mask, missing_only = TRUE)
+      } else {
+        fit@misc[["loss"]]
+      }
+
+      p(message = sprintf("k=%d, restart %d/%d", k, i, n_restarts))
+
+      list(fit = fit, error = err)
+    })
+
+    fits   <- lapply(fits_and_errors, `[[`, "fit")
+    errors <- sapply(fits_and_errors, `[[`, "error")
+    best_idx <- which.min(errors)
+
+    # --- stability -----------------------------------------------------------
+    if (length(fits) < 2) {
+      sims <- NA_real_
+    } else {
+      sims <- combn(length(fits), 2, function(idx) {
+        tryCatch({
+          if (ncol(fits[[idx[1]]]@w) == 0 || ncol(fits[[idx[2]]]@w) == 0) return(NA_real_)
+          mean(genespace_stability(fits[[idx[1]]], fits[[idx[2]]]))
+        }, error = function(e) NA_real_)
+      }, simplify = TRUE)
+    }
+
+    list(
+      k         = k,
+      error     = mean(errors),   # average over restarts, not just best
+      stability = max(sims, na.rm = TRUE)
+    )
+  })
+
+  if (show_plot) {
+    error_df <- data.frame(k = ks, error     = sapply(results, `[[`, "error"))
+    stab_df  <- data.frame(k = ks, stability = sapply(results, `[[`, "stability"))
+
+    p_error <- ggplot(error_df, aes(x = k, y = error)) +
+      geom_line() + geom_point() +
+      labs(x = "k", y = if (use_cv) "test MSE" else "reconstruction error") +
+      theme_classic()
+
+    p_stab <- ggplot(stab_df, aes(x = k, y = stability)) +
+      geom_line() + geom_point() +
+      labs(x = "k", y = "mean factor stability") +
+      theme_classic()
+
+    #print(p_error + p_stab)
+  }
+
+  list(results = results, plot = (p_error + p_stab))
+}
+
+
+
+
+
+filename <- file.path(cache_dir, "find_k_coarse.RDS")
+if (file.exists(filename)) {
+  find_k_coarse <- readRDS(filename)
+} else {
+    find_k_coarse <- find_factors(
+      de,
+      ks = c(7, 10, 15, 20, 25, 30),
+      n_restarts=3,
+      test_fraction = 0.1,
+      L1 = c(0.0 , 0.0),
+      tol = 1e-2
+    )
+    saveRDS(find_k_coarse, filename)
+}
+ 
+
+#filename <- file.path(cache_dir, "find_k_fine.RDS")
+#if (file.exists(filename)) {
+#  find_k_fine <- readRDS(filename)
+#} else {
+#    find_k_fine <- find_factors(
+#      de,
+#      ks = c(14, 15, 16),
+#      n_restarts=2,
+#      L1 = c(0.0 , 0.0),
+##      tol = 1e-3
+#    )
+#    saveRDS(find_k_fine, filename)
+#}
+```
+
+
+```{r}
+find_k_coarse$plot
+#find_k_fine$plot
+```
+
+### On genespace factor stability
+
+I conjecture that mean factor stability as defined above is a useful metric to evaluate a region of good numbers of biclusters. For $k$ too small, each fit from a random initital position finds different biclusters, and therefore, the overlap between the spans of $W$ becomes small. Thus, the maximum distance between different $W$ is large. The 'correct' number of biclusters on the other hand should lead to a stable recovering of the same biclusters over repeated iterations. When the number of factors becomes too large, the excess factors fit noise, and depending on random initialisation, the noise being fit may drastically vary and is not stable. Thus, the span of $W$ is no longer stable due to noise fitting and the distance between the subspaces spanned should increase again.
+
+
+By construction, NMF yields $X = W D H + \epsilon$, where loadings $W$ and factors $H$ are dense and overlapping. This is both, feature and nuisance. The explicit construction allows multiple membership of genes and cells to biclusters -- key advantage over adapted clustering algorithms and also many old-school biclustering approaches (technically we do not bicluster in the mathematical sense).
+
+Density though makes interpretability neigh on impossible, and moreover, we model noise which is arguably most of the actual data matrix. To address this issue of eliminating the modelled noise and make biclusters interpretable, we do the following:
+
+- Reshuffle each row independently
+- This destroys any bicluster structure
+- Perform NMF on this null-like data matrix
+- Get access to the null distributions of $W$ and $H$
+- Find per factor quantiles on $W$ and $H$ distributions to use for threshholding
+- Repeat to ensure 
+
+
+(Note to self: the code below needs revising, I think separating per factor may have some issues and a truly structureless null should yield universal thresholds -- approximately seen in results also!)
+```{r}
+fit_nmf <- function(matrix,
+              k,
+              L1 = c(0, 0),
+              n_restarts = 1,
+              n_perm = 10,
+              thr_h = 0.95,
+              thr_w_pos = 0.95,
+              thr_w_neg = 0.95
+              )
+  {
+
+  biclusters <- nmf(matrix, k = k, seed = 1:n_restarts)
+  
+  n_genes <- nrow(matrix) / 2
+
+  nulls <- lapply(seq_len(n_perm), function(i) {
+    mat_perm <- t(apply(matrix, 1, sample))
+    fit_perm <- nmf(mat_perm, k = k, L1 = L1, seed = i, tol = 1e-2)
+    list(h = fit_perm@h, w = fit_perm@w)
+  })
+
+  null_h <- lapply(nulls, `[[`, "h")
+  null_w <- lapply(nulls, `[[`, "w")
+
+  null_w_pos <- lapply(null_w, function(w) w[1:n_genes, , drop = FALSE])
+  null_w_neg <- lapply(null_w, function(w) w[(n_genes + 1):nrow(w), , drop = FALSE])
+
+  null_threshold_h <- sapply(seq_len(k), function(i) {
+    quantile(unlist(lapply(null_h, function(h) h[i, ])), thr_h)
+  })
+
+  null_threshold_w_pos <- sapply(seq_len(k), function(i) {
+    quantile(unlist(lapply(null_w_pos, function(w) w[, i])), thr_w_pos)
+  })
+
+  null_threshold_w_neg <- sapply(seq_len(k), function(i) {
+    quantile(unlist(lapply(null_w_neg, function(w) w[, i])), thr_w_neg)
+  })
+
+  list(biclusters = biclusters, null_h = null_threshold_h, null_w_pos = null_threshold_w_pos, null_w_neg = null_threshold_w_neg)
+}
+
+filename <- file.path(cache_dir, "fit_nmf.RDS")
+if (file.exists(filename)){
+  nmf_fit <- readRDS(filename)
+} else {
+  nmf_fit <- fit_nmf(de, k = 15, n_restart = 1, n_perm = 5, thr_h = c(0.9, 0.95, 0.99, 0.995, 0.999), thr_w_pos = c(0.9, 0.95, 0.99, 0.995, 0.999), thr_w_neg = c(0.9, 0.95, 0.99, 0.995, 0.999))
+  saveRDS(nmf_fit, filename)
+}
+```
+
+```{r}
+biclusters <- nmf_fit$biclusters
+null_h <- nmf_fit$null_h
+null_w_pos <- nmf_fit$null_w_pos
+null_w_neg <- nmf_fit$null_w_neg
+
+
+W <- biclusters@w
+H <- biclusters@h
+
+n_genes <- length(pos_orig)
+W_pos <- W[1:n_genes, ]
+W_neg  <- W[(n_genes+1):nrow(de), ]
+
+rownames(W_pos) <- pos_orig
+rownames(W_neg) <- neg_orig
+```
+
+:::{.column-margin}
+Example: Looking at the dsitribution of loadings and weights of bicluster 1.
+```{r}
+hist(H[1,])
+hist(W_pos[,1])
+hist(W_neg[,1])
+```
+:::
+
+Now we assign membership to biclusters according to thresholds defined from the null distribution
+```{r}
+null_h <- null_h[5,]
+null_w_pos <- null_w_pos[5,]
+null_w_neg <- null_w_neg[5,]
+
+
+n_bic <- nrow(H)
+
+bic_cells <- lapply(1:n_bic, function(i){
+  H[i,] > null_h[i]
+})
+
+bic_up <- lapply(1:n_bic, function(i){
+  W_pos[,i] > null_w_pos[i]
+})
+
+bic_down <- lapply(1:n_bic, function(i){
+  W_neg[,i] > null_w_neg[i]
+})
+```
+
+
+```{r}
+##############
+k <- 3
+l <- 1
+
+de_expression <- de_matrix
+
+genes_up <- sort(W_pos[,k], decreasing = TRUE)
+
+genes_down <- sort(W_neg[,k], decreasing = TRUE)
+
+sel_gene <- names(genes_up[l])
+#sel_gene <- "GATA2"
+
+#umap <- uwot::umap(t(fit$training_data$embedding))
+umap <-uwot::umap(t(assay(fit$training_data,"DE")))
+
+p1 <- tibble(umap = umap) |>
+  mutate(de = assay(fit$training_data, "DE")[sel_gene,]) |>
+  #arrange(abs(de)) |>
+  ggplot(aes(x = umap[,1], y = umap[,2])) +
+    geom_point(aes(color = de), size = 0.5) +
+    scale_color_gradient2(low = "#FFD800", high= "#0056B9") +
+    coord_fixed()
+
+
+p2 <- tibble(umap = umap) |>
+  mutate(member_cells = bic_cells[[k]]) |>
+  ggplot(aes(x = umap[,1], y = umap[,2])) +
+    geom_point(aes(color = member_cells), size = 0.5) +
+    coord_fixed()
+
+p1
+
+p2
+```
+
+
+
+```{r}
+##############
+k <- 3
+l <- 1
+
+de_expression <- de_matrix
+
+genes_up <- sort(W_pos[,k], decreasing = TRUE)
+
+genes_down <- sort(W_neg[,k], decreasing = TRUE)
+
+sel_gene <- names(genes_up[l])
+#sel_gene <- "GATA2"
+
+#umap <- uwot::umap(t(fit$training_data$embedding))
+
+p1 <- tibble(umap = umap) |>
+  mutate(de = assay(fit$training_data, "DE")[sel_gene,]) |>
+  #arrange(abs(de)) |>
+  ggplot(aes(x = umap[,1], y = umap[,2])) +
+    geom_point(aes(color = de), size = 0.5) +
+    scale_color_gradient2(low = "#FFD800", high= "#0056B9") +
+    coord_fixed()
+
+gene_bics <- unname(which(sapply(bic_up, function(x) x[sel_gene])))
+
+n_cells <- length(bic_cells[[1]])
+
+cell_label <- sapply(seq_len(n_cells), function(i) {
+  bics_here <- gene_bics[vapply(gene_bics, function(b) bic_cells[[b]][i], logical(1))]
+  
+  if (length(bics_here) == 0) {
+    NA
+  } else {
+    paste0("BIC", bics_here[1])
+  }
+})
+
+p2 <- tibble(x = umap[,1], y = umap[,2]) |>
+  mutate(bic = factor(cell_label)) |>
+  ggplot(aes(x, y)) +
+  geom_point(aes(color = bic), size = 0.5) +
+  coord_fixed()
+
+p1 | p2
+```
