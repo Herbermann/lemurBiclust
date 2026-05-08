@@ -16,5 +16,14 @@ fit_nmf <- function(
   # --- fit ---
   fit <- RcppML::nmf(mat, k = k, seed = seeds, L1 = L1, tol = tol)
 
-  list(W = fit@w, H = fit@h, D = fit@d)
+  W <- fit@w
+  n_genes <- nrow(W)/2
+  W_pos <- W[1:n_genes,]
+  W_neg <- W[(n_genes+1):(2*n_genes),]
+
+  rownames(W_pos) <- sub("^up_", "", rownames(W_pos))
+  rownames(W_neg) <- sub("^down_", "", rownames(W_neg))
+
+  list(W = fit@w, H = fit@h, D = fit@d, W_pos = W_pos, W_neg = W_neg, fit = fit)
 }
+

@@ -19,72 +19,76 @@ preprocess_assay <- function(
   clip_max   <- match.arg(clip_max)
 
   if (!use_assay %in% assayNames(lemur_fit_class))
-  stop(sprintf(
-    "'use_assay' must be one of: %s",
-    paste(assayNames(lemur_fit_class), collapse = ", ")
-  ))
+    stop(sprintf(
+      "'use_assay' must be one of: %s",
+      paste(assayNames(lemur_fit_class), collapse = ", ")
+    ))
 
-  # --- dispatch ---
-
-  mat_raw <- assay(lemur_fit_class, use_assay)
+  mat_raw   <- assay(lemur_fit_class, use_assay)
   is_sparse <- is(mat_raw, "sparseMatrix")
 
-  # --- compute weight (saturation scale) ---
-  weight <- if (!is.null(clip_max_value)) {
-    if (clip_max == "quantile") {
-      1 / quantile(mat_raw, clip_max_value, na.rm = TRUE)
-    } else if (clip_max == "fixed") {
-      1 / clip_max_value
-    } else {
-      1
-    }
-  } else {
-    if (clip_max != "none")
-      warning("no valid clip_max_value provided, defaulting to weight = 1")
-    1
-  }
-
-  # --- compute threshold (noise floor) ---
+  # --- apply noise floor clipping ---
   thrsh <- if (!is.null(clip_noise_value)) {
-    if (clip_noise == "fixed") {
-      clip_noise_value
-    } else {
-      0
-    }
+    if (clip_noise == "fixed") clip_noise_value else 0
   } else {
     if (clip_noise != "none")
       warning("no valid clip_noise_value provided, defaulting to thrsh = 0")
     0
   }
 
-  # --- apply noise floor clipping ---
-  # pmax introduces new zeros, so drop them before transform for efficiency
   if (thrsh != 0) {
     mat_raw <- .TRANSFORMS[["clip"]](threshold = thrsh)(mat_raw)
     if (is_sparse)
       mat_raw <- Matrix::drop0(mat_raw)
   }
 
-  # --- apply transform ---
-  transform_fn <- .TRANSFORMS[[transform]](w = weight)
-  mat <- transform_fn(mat_raw)
+  # --- split into positive and negative parts first ---
+  mat_pos_raw <- pmax(mat_raw,  0)
+  mat_neg_raw <- pmax(-mat_raw, 0)
 
-  # --- restore sparsity if input was sparse ---
-  if (is_sparse && !is(mat, "sparseMatrix"))
-    mat <- Matrix::Matrix(mat, sparse = TRUE)
+  if (is_sparse) {
+    mat_pos_raw <- Matrix::drop0(Matrix::Matrix(mat_pos_raw, sparse = TRUE))
+    mat_neg_raw <- Matrix::drop0(Matrix::Matrix(mat_neg_raw, sparse = TRUE))
+  }
 
-  # --- split into positive and negative parts ---
-  mat_pos <- pmax(mat,  0)
-  mat_neg <- pmax(-mat, 0)
+  # --- compute separate weights per half ---
+  .compute_weight <- function(mat_half, clip_max, clip_max_value) {
+    if (!is.null(clip_max_value)) {
+      if (clip_max == "quantile") {
+        nz <- mat_half[mat_half > 0]
+        if (length(nz) == 0) return(1)
+        1 / quantile(nz, clip_max_value, na.rm = TRUE)
+      } else if (clip_max == "fixed") {
+        1 / clip_max_value
+      } else {
+        1
+      }
+    } else {
+      if (clip_max != "none")
+        warning("no valid clip_max_value provided, defaulting to weight = 1")
+      1
+    }
+  }
 
-  # ensure sparse after split — pmax densifies, and we want zeros dropped
+  weight_pos <- .compute_weight(mat_pos_raw, clip_max, clip_max_value)
+  weight_neg <- .compute_weight(mat_neg_raw, clip_max, clip_max_value)
+
+  # --- apply transform to each half independently ---
+  transform_fn_pos <- .TRANSFORMS[[transform]](w = weight_pos)
+  transform_fn_neg <- .TRANSFORMS[[transform]](w = weight_neg)
+
+  mat_pos <- transform_fn_pos(mat_pos_raw)
+  mat_neg <- transform_fn_neg(mat_neg_raw)
+
+  # --- ensure sparse ---
   mat_pos <- Matrix::drop0(Matrix::Matrix(mat_pos, sparse = TRUE))
   mat_neg <- Matrix::drop0(Matrix::Matrix(mat_neg, sparse = TRUE))
 
-  rownames(mat_pos) <- paste0("up_",   make.unique(rownames(mat)))
-  rownames(mat_neg) <- paste0("down_", make.unique(rownames(mat)))
-  colnames(mat_pos) <- colnames(mat)
-  colnames(mat_neg) <- colnames(mat)
+  # --- set dimnames ---
+  rownames(mat_pos) <- paste0("up_",   make.unique(rownames(mat_raw)))
+  rownames(mat_neg) <- paste0("down_", make.unique(rownames(mat_raw)))
+  colnames(mat_pos) <- colnames(mat_raw)
+  colnames(mat_neg) <- colnames(mat_raw)
 
   Matrix::rbind2(mat_pos, mat_neg)
 }
