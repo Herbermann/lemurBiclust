@@ -1,0 +1,370 @@
+---
+title: "Biclusters for LEMUR -- a workflow"
+author: "Tim"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo 
+    self-contained: true 
+    page-layout: full  
+execute:
+  warning: false
+  message: false
+---
+
+
+```{r}
+#| label: setup
+#| include: false
+
+# source the protopackage
+SOURCE_DIR <- "/Users/herbermann/code/lemur_biclusters/R"
+
+files_to_source <- c(
+  "preprocess.R",
+  "explore_factors.R",
+  "fit_nmf.R",
+  "extract_biclusters.R",
+  "recruitment.R",
+  "test_bicluster.R"
+)
+
+invisible(lapply(file.path(SOURCE_DIR, files_to_source),source))
+
+library("tidyverse")
+library("SingleCellExperiment")
+library("lemur")
+library("pheatmap")
+
+folder_data <- "/Users/herbermann/code/data/lemur4decode"
+filename <- "sce_Notch_clean.rds"
+
+sce <- readRDS(file.path(folder_data, filename))
+
+set.seed(42)
+```
+
+# 0. LEMUR standard fit
+```{r}
+dec <- modelGeneVar(sce, block = sce$Batch)
+
+n_hvg <- 2000
+top_hvg <- getTopHVGs(dec, n = n_hvg)
+
+rowData(sce)$bio_var <- dec$bio
+rowData(sce)$highly_variable <- rownames(sce) %in% top_hvg
+
+sce_hvg <- sce[rowData(sce)$highly_variable, ]
+```
+
+
+```{r}
+n_latents <- 20
+
+lemur_fit = lemur(sce_hvg, design = ~ Batch + Perturbation, n_embedding = n_latents, test_fraction = 0.6) 
+#lemur_fit = align_harmony(lemur_fit) 
+#lemur_fit <- align_harmony(lemur_fit)
+lemur_fit <- test_de(lemur_fit, contrast = cond(Perturbation = "N") - cond(Perturbation = "control"))
+```
+
+# 1. Preprocess
+
+Some preprocessing steps to crystalise the bicluster structure better.
+Options here might be:
+
+- soft/hard max clipping: DE of 2,4 or 8 logfolds are similarly relevant and can be mapped close to each other
+
+- LEMUR fit induces dense noise around 0. It may be beneficial to clip that noise away to increase performance and avoid biclustering to noise from the original fit.
+
+Here, we take the DE predicted from LEMUR, $\Delta Y$, and apply $\Delta \hat Y = \frac{1}{w} \mathrm{tanh}(w \Delta Y)$ where $w = 1/Q_{95\%}$. (The used function already has placerholder for different transformations, but those are not yet implemented). The preprocessing is stratified by training/test data.
+
+```{r}
+dummy_mat <- preprocess_assay_splits(
+  lemur_fit,
+  "DE",
+  transform = "tanh",
+  clip_max = "quantile",
+  clip_max_value = 0.95
+)
+```
+
+
+# 2. How many factors to fit?
+
+Hard to judge. A few general considerations
+
+- Reasonable reconstruction. Is most of the matrix structure captured?
+- Are factors reproducible and exhaustive? Do repeated fit attempts find the same/very similar factors?
+- Too many factors should not hurt too much apart from performance. (Look up the theorem prooving that too many factors in NMF assist in finding better minima at lower rank). Should only find finer biclusters, or fit noise-like biclusters that can be removed downstream
+- Probably less than LEMUR latent dimension.
+
+The "package" has a small helper function that iterates over proposed factors $k$, and uses a small validation data set to judge reconstruction error over many attempts. It also contains a geometric argument of how similar found factors are -- principal angles between the gene subspaces spanned for different repetitions at fixed $k$. This might aid in guessing a suitable number of factors.
+
+```{r}
+dummy_explore <- explore_factors_progress(
+  dummy_mat$train,
+  c(14, 15, 16, 17,
+  n_restarts = 3,
+  tol = 0.05
+)
+
+print(dummy_explore$plot)
+```
+
+As for now my experience was that you need less than the best fit point in reconstruction useually.
+
+# 3. Fitting NMF
+
+After deciding which factor numbers to try, there is a think wrapper around the `RcppML` package's NMF fitting. It attempts repeated fits and returns the best in terms of validation set reconstruction error.
+
+```{r}
+n_factor <- 14
+dummy_fit <- fit_nmf(dummy_mat$train, k=n_factor, 5, seed = 42)
+```
+
+
+# 4. Translating soft-membership into hard labels
+
+NMF yields soft, continuous and dense memberships of genes and cells to factors. The recruiter function allows recruit cells and genes to a bicluster based on a coherence criterion.
+
+Given the processed matrix and an assay (either the real DE matrix or some transformed version of it), genes and cells are loaded to a bicluster by decreasing loading magnitudes. The function greedily accumulates genes and cells until coherence as measured by rank-1-ness of the bicluster drops below a set threshold or it seems statistically likely ($p>\alpha$) that the bicluster of this size arose by chance.
+
+
+```{r}
+cuts_dummy <- c(0.98, 0.96, 0.94, 0.92, 0.9, 0.85, 0.8, 0.75, 0.7, 0.6, 0.5, 0.4)
+
+# reconstruct a compact mofified matrix
+up <- dummy_mat$train[1:n_hvg,]
+down <- -dummy_mat$train[(n_hvg+1):(2*n_hvg),]
+rownames(up) <- sub("^up_", "", rownames(up))
+rownames(down) <- sub("^down_", "", rownames(down))
+mat <- up + down
+
+recruitment <- .global_recruiter(
+  mat = dummy_mat$train,
+  assay = mat,#assay(lemur_fit, "DE"),
+  fit = dummy_fit,
+  factors = NULL,
+  cutoffs_pos = cuts_dummy,
+  cutoffs_neg = cuts_dummy,
+  cutoffs_cell = cuts_dummy,
+  cut_pc_abs = 0.75,
+  alpha = 0.05,
+  nnull = 100,
+  return_gap = TRUE,
+  use_irlba = TRUE
+)
+
+recruitment_log <- recruitment$recruitment_log
+biclusters_summary <- recruitment$biclusters
+
+global_rank <-  irlba::irlba(assay(lemur_fit, "DE"), nv = 1)$d**2/sum(assay(lemur_fit, "DE") * assay(lemur_fit, "DE"))
+
+global_rank_mat <- irlba::irlba(dummy_mat$train, nv = 1)$d**2/sum(dummy_mat$train*dummy_mat$train)
+
+
+recruitment_thrsh_up   <- biclusters_summary$cutoff_pos
+recruitment_thrsh_down <- biclusters_summary$cutoff_neg
+recruitment_thrsh_cell <- biclusters_summary$cutoff_cell
+
+bic_up <- lapply(seq(1:n_factor), function(i) {.fast_extract(sort(dummy_fit$W_pos[,i], decreasing = TRUE), recruitment_thrsh_up[i])})
+names(bic_up) <- paste0("Bic", seq_len(n_factor))
+
+bic_down <- lapply(seq(1:n_factor), function(i) {.fast_extract(sort(dummy_fit$W_neg[,i], decreasing = TRUE), recruitment_thrsh_down[i])})
+names(bic_down) <- paste0("Bic", seq_len(n_factor))
+
+bic_cell <- lapply(seq(1:n_factor), function(i) {.fast_extract(sort(dummy_fit$H[i,], decreasing = TRUE), recruitment_thrsh_cell[i])})
+names(bic_cell) <- paste0("Bic", seq_len(n_factor))
+
+print(biclusters_summary |> select(cutoff_pos, cutoff_neg, cutoff_cell, ngenes_pos, ngenes_neg, ncells, pc1))
+
+
+```
+
+# 5. Applying to test data
+
+```{r}
+projections <- .project_biclusters(dummy_fit, dummy_mat$test, recruitment_thrsh_cell)
+
+bic_test <- projections$thresholded
+names(bic_test) <- sub("^nmf", "Bic", names(bic_test))
+```
+
+We can plot test and training embedding on the full data umap to visually confirm that test data biclusters are compatible with their training counterparts
+
+
+
+```{r}
+#| fig-width: 12
+#| fig-height: 24
+#| out-width: 100%
+
+all_embedding <- cbind(
+  lemur_fit$training_data$embedding,
+  lemur_fit$test_data$embedding
+)
+
+umap <- uwot::umap(t(all_embedding))
+
+train_df <- as_tibble(lemur_fit$training_data$colData) |>
+  mutate(
+    dataset = "train",
+    cell_id = colnames(lemur_fit$training_data$embedding)
+  )
+
+test_df <- as_tibble(lemur_fit$test_data$colData) |>
+  mutate(
+    dataset = "test",
+    cell_id = colnames(lemur_fit$test_data$embedding)
+  )
+
+cell_df <- bind_rows(train_df, test_df) |>
+  mutate(
+    UMAP1 = umap[,1],
+    UMAP2 = umap[,2]
+  )
+
+
+plot_df <- bind_rows(
+  lapply(seq_len(n_factor), \(i) {
+
+    bic_name <- paste0("Bic", i)
+
+    cell_df |>
+      mutate(
+        bic = bic_name,
+
+        membership = case_when(
+          dataset == "train" &
+            cell_id %in% bic_cell[[bic_name]] ~ "train",
+
+          dataset == "test" &
+            cell_id %in% bic_test[[bic_name]] ~ "test",
+
+          TRUE ~ "other"
+        )
+      )
+  })
+)
+
+ggplot(plot_df, aes(UMAP1, UMAP2)) +
+
+  geom_point(
+    aes(color = membership),
+    alpha = 0.5,
+    size = 0.4
+  ) +
+
+  scale_color_manual(
+    values = c(
+      other = "grey92",
+      train = "#E64B35",
+      test  = "#4DBBD5" 
+    )
+  ) +
+
+  facet_wrap(~bic, ncol = 2) +
+  coord_equal() +
+  theme_classic()
+```
+
+
+
+```{r}
+jaccard <- function(a, b) {
+  length(intersect(a, b)) / length(union(a, b))
+}
+
+cell_jaccard <- outer(
+  seq_along(bic_cell),
+  seq_along(bic_cell),
+  Vectorize(\(i, j) {
+    jaccard(
+      bic_cell[[i]],
+      bic_cell[[j]]
+    )
+  })
+)
+
+rownames(cell_jaccard) <- names(bic_cell)
+colnames(cell_jaccard) <- names(bic_cell)
+
+bic_genes <- lapply(seq(1:n_factor), function(i) {union(bic_up[[i]], bic_down[[i]])})
+
+gene_jaccard <- outer(
+  seq_along(bic_up),
+  seq_along(bic_down),
+  Vectorize(\(i, j) {
+    jaccard(
+      bic_up[[i]],
+      bic_down[[j]]
+    )
+  })
+)
+
+rownames(gene_jaccard) <- names(bic_cell)
+colnames(gene_jaccard) <- names(bic_cell)
+
+gene_jaccard_up <- outer(
+  seq_along(bic_up),
+  seq_along(bic_up),
+  Vectorize(\(i, j) {
+    jaccard(
+      bic_up[[i]],
+      bic_up[[j]]
+    )
+  })
+)
+
+rownames(gene_jaccard_up) <- names(bic_cell)
+colnames(gene_jaccard_up) <- names(bic_cell)
+
+gene_jaccard_down <- outer(
+  seq_along(bic_down),
+  seq_along(bic_down),
+  Vectorize(\(i, j) {
+    jaccard(
+      bic_down[[i]],
+      bic_down[[j]]
+    )
+  })
+)
+
+rownames(gene_jaccard_down) <- names(bic_cell)
+colnames(gene_jaccard_down) <- names(bic_cell)
+
+pheatmap(
+  cell_jaccard,
+  main = "Cell Jaccard overlap",
+  display_numbers = TRUE
+)
+
+pheatmap(
+  gene_jaccard,
+  main = "Gene (up vs. down) Jaccard overlap",
+  display_numbers = TRUE
+)
+
+pheatmap(
+  gene_jaccard_up,
+  main = "Upregulation Jaccard overlap",
+  display_numbers = TRUE
+)
+
+pheatmap(
+  gene_jaccard_down,
+  main = "Downregulation Jaccard overlap",
+  display_numbers = TRUE
+)
+```
+
+# 6. Downstream?
+
+Different options from here on.
+
+- Enrichment of biclusters with cell annotations/other meta data?
+- GSEA can reveal programmatic responses to condition contrast, independently of meta data. Find programmatic responses shared between cell types, as well as subdominant programmes that might get lost in cell type bulk analysis.
+- Finding programms and subprogramms. E.g. `sertdiff(bicA, bicB)` can reveal how bicA differs from bicB when they share significant overlap -> Programmes and Subprogrammes in DE
+
