@@ -889,5 +889,44 @@
     )
   }
 
-  results
+  biclusters <- do.call(rbind, lapply(seq_along(results), function(i) {
+
+    acc <- results[[i]]$accepted
+
+    if (is.null(acc) || nrow(acc) == 0) {
+      return(data.frame(
+        factor = i,
+        cutoff_pos = NA_real_,
+        cutoff_neg = NA_real_,
+        cutoff_cell = NA_real_,
+        ngenes_pos = NA_real_,
+        ngenes_neg = NA_real_,
+        ncells = NA_real_,
+        pc1 = NA_real_
+      ))
+    }
+
+    cbind(
+      factor = i,
+      acc[
+        nrow(acc),
+        c(
+          "cutoff_pos",
+          "cutoff_neg",
+          "cutoff_cell",
+          "ngenes_pos",
+          "ngenes_neg",
+          "ncells",
+          "pc1"
+        ),
+        drop = FALSE
+      ]
+    )
+  }))
+
+  out = list(
+    recruitment_log = results,
+    biclusters = biclusters
+  )
+  
 }
