@@ -4,6 +4,20 @@
   clip    = function(threshold) function(x) pmax(x, threshold)
 )
 
+.apply_fixed_noise_clip <- function(mat, thrsh) {
+  if (thrsh <= 0) return(mat)
+
+  if (inherits(mat, "sparseMatrix")) {
+    if (length(mat@x)) {
+      mat@x[abs(mat@x) < thrsh] <- 0
+    }
+    Matrix::drop0(mat)
+  } else {
+    mat[abs(mat) < thrsh] <- 0
+    mat
+  }
+}
+
 preprocess_assay <- function(
   lemur_fit_class,
   use_assay,
@@ -28,18 +42,13 @@ preprocess_assay <- function(
   is_sparse <- is(mat_raw, "sparseMatrix")
 
   # --- apply noise floor clipping ---
-  thrsh <- if (!is.null(clip_noise_value)) {
-    if (clip_noise == "fixed") clip_noise_value else 0
-  } else {
-    if (clip_noise != "none")
-      warning("no valid clip_noise_value provided, defaulting to thrsh = 0")
-    0
-  }
-
-  if (thrsh != 0) {
-    mat_raw <- .TRANSFORMS[["clip"]](threshold = thrsh)(mat_raw)
-    if (is_sparse)
-      mat_raw <- Matrix::drop0(mat_raw)
+  if (clip_noise == "fixed") {
+    if (is.null(clip_noise_value) || length(clip_noise_value) != 1 || !is.finite(clip_noise_value)) {
+      stop("'clip_noise_value' must be a finite scalar when clip_noise = 'fixed'")
+    }
+    thrsh <- clip_noise_value
+    if (thrsh < 0) stop("'clip_noise_value' must be non-negative")
+    mat_raw <- .apply_fixed_noise_clip(mat_raw, thrsh)
   }
 
   # --- split into positive and negative parts first ---
