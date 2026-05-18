@@ -25,11 +25,8 @@ SOURCE_DIR <- "/Users/herbermann/code/lemur_biclusters/R"
 files_to_source <- c(
   "preprocess.R",
   "explore_factors.R",
-  "fit_nmf.R",
-  "extract_biclusters.R",
-  "recruitment.R",
-  "test_bicluster.R",
-  "consensus_biclustering.R"
+  "consensus_biclustering.R",
+  "get_biclusters.R"
 )
 
 invisible(lapply(file.path(SOURCE_DIR, files_to_source),source))
@@ -155,7 +152,7 @@ res <- get_biclusters(
   cell_support_threshold = 0.95
 )
 
-res_2 <- apply_sparse_bicluster_thresholds(
+res_2 <- get_biclusters(
   support_obj,
   gene_support_threshold = 0.95,
   cell_support_threshold = 0.8
