@@ -2,8 +2,10 @@
 
 get_biclusters <- function(
   support_object,
+  assay = NULL,
   gene_support_threshold = 0.50,
-  cell_support_threshold = 0.50
+  cell_support_threshold = 0.50,
+  null_validate = NULL
 ) {
   required_fields <- c(
     "gene_support", "cell_support", "feature_names", "sample_names", "k", "factor_match_similarity"
@@ -43,13 +45,53 @@ get_biclusters <- function(
 
     biclusters[[f]] <- list(
       factor = f,
-      gene_idx = gene_idx,
-      cell_idx = cell_idx,
       gene_names = sub("^(up|down)_", "", feature_names[gene_idx]),
-      cell_names = sample_names[cell_idx],
-      gene_support = gene_support[gene_idx, f, drop = FALSE],
-      cell_support = cell_support[cell_idx, f, drop = FALSE]
+      gene_up = sub("^up_", "", feature_names[gene_idx][grepl("^up_", feature_names[gene_idx])]),
+      gene_down = sub("^down_", "", feature_names[gene_idx][grepl("^down_", feature_names[gene_idx])]),
+      cell_names = sample_names[cell_idx]
     )
+
+    if (!is.null(assay)) {
+      gs <- biclusters[[f]]$gene_names
+      cs <- biclusters[[f]]$cell_names
+
+      if (length(gs) < 2 || length(cs) < 2) {
+        coh <- NA_real_
+      } else {
+        sub <- assay[gs, cs, drop = FALSE]
+        coh <- irlba::irlba(sub, nv = 1, nu = 0)$d^2 / norm(sub, type = "F")^2
+      }
+
+      if (is.numeric(null_validate)) {
+        global_coherence <- irlba::irlba(assay, nv = 1, nu = 0)$d^2 / norm(assay, type = "F")^2
+        reps <- null_validate
+        null_coherences <- numeric(reps)
+
+        for (j in seq_len(reps)) {
+          if (length(gs) < 2 || length(cs) < 2) {
+            null_coherences[j] <- NA_real_
+          } else {
+            row_idx <- sample.int(nrow(assay), length(gs), replace = FALSE)
+            col_idx <- sample.int(ncol(assay), length(cs), replace = FALSE)
+            Xnull <- assay[row_idx, col_idx, drop = FALSE]
+            null_coherences[j] <- irlba::irlba(Xnull, nv = 1, nu = 0)$d^2 / norm(Xnull, type = "F")^2
+          }
+        }
+
+        sd <- sqrt(mean((null_coherences - global_coherence)^2, na.rm = TRUE))
+        p_emp <- (sum(null_coherences >= coh, na.rm = TRUE) + 1) / (sum(!is.na(null_coherences)) + 1)
+      } else {
+        sd <- NULL
+        p_emp <- NULL
+        global_coherence <- NULL
+      }
+
+    } else {
+      coh <- NULL
+      sd <- NULL
+      p_emp <- NULL
+      global_coherence <- NULL
+    }
 
     bicluster_summary$n_genes[f] <- length(gene_idx)
     bicluster_summary$n_cells[f] <- length(cell_idx)
@@ -58,6 +100,10 @@ get_biclusters <- function(
     bicluster_summary$max_gene_support[f] <- max(gene_support[, f], na.rm = TRUE)
     bicluster_summary$max_cell_support[f] <- max(cell_support[, f], na.rm = TRUE)
     bicluster_summary$mean_match_similarity[f] <- mean(factor_match_similarity[, f], na.rm = TRUE)
+    bicluster_summary$coherence[f] <- coh
+    bicluster_summary$null_coherence[f] <- global_coherence
+    bicluster_summary$null_deviation[f] <- sd
+    bicluster_summary$p_emp[f] <- p_emp
   }
 
   list(

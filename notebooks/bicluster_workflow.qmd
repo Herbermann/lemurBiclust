@@ -136,8 +136,6 @@ support_obj <- build_consensus_nmf(
   seed = 1,
   tol = 0.01
 )
-
-
 ```
 
 # 4. Translating soft-membership into hard labels
@@ -148,6 +146,7 @@ By defining thresholds for the fraction of recruitments, we turn soft membership
 
 res <- get_biclusters(
   support_obj,
+  assay(lemur_fit, "DE"),
   gene_support_threshold = 0.95,
   cell_support_threshold = 0.95
 )
@@ -293,9 +292,7 @@ pheatmap(cell_jaccard)
 ```{r}
 g1 <- res$biclusters[[11]]$gene_names
 c1 <- res$biclusters[[11]]$cell_names
-
 sub1 <- assay(lemur_fit, "DE")[g1, c1, drop = FALSE]
-
 irlba::irlba(sub1, nv = 1, nu = 0)$d^2/norm(sub1, type="F")^2
 
 ```

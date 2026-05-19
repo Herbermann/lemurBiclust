@@ -200,6 +200,28 @@ factor_sparsity_summary <- function(fit, zero_tol = 1e-8) {
   )
 }
 
+
+pareto_front <- function(df, x, y) {
+  # x minimized, y maximized
+
+  ord <- order(df[[x]], -df[[y]])
+
+  best_y <- -Inf
+  keep <- logical(nrow(df))
+
+  for (i in ord) {
+    yi <- df[[y]][i]
+
+    if (yi > best_y) {
+      keep[i] <- TRUE
+      best_y <- yi
+    }
+  }
+
+  keep
+}
+
+
 explore_sparsity <- function(
     mat,
     k,
@@ -214,12 +236,15 @@ explore_sparsity <- function(
   if (!is.numeric(k) || length(k) != 1 || k < 1 || k != floor(k)) {
     stop("'k' must be a single positive integer")
   }
+
   if (k >= min(dim(mat))) {
     stop("'k' must be smaller than both dimensions of 'mat'")
   }
+
   if (!is.numeric(n_restarts) || length(n_restarts) != 1 || n_restarts < 1) {
     stop("'n_restarts' must be a single positive integer")
   }
+
   if (!is.numeric(test_fraction) || test_fraction < 0 || test_fraction >= 1) {
     stop("'test_fraction' must be a number in [0, 1)")
   }
@@ -227,6 +252,7 @@ explore_sparsity <- function(
   if (is.atomic(l1_grid) && !is.list(l1_grid)) {
     l1_grid <- as.list(l1_grid)
   }
+
   if (!is.list(l1_grid) || length(l1_grid) == 0) {
     stop("'l1_grid' must be a non-empty list or numeric vector")
   }
@@ -236,33 +262,51 @@ explore_sparsity <- function(
 
   use_cv <- test_fraction > 0
 
-  # Make the held-out masks once, then reuse them across all L1 values
+  # --- CV masks ---
   cv_masks <- NULL
+
   if (use_cv) {
+
     nz_idx <- which(mat != 0, arr.ind = TRUE)
-    if (nrow(nz_idx) == 0) stop("'mat' has no non-zero entries for CV masking")
+
+    if (nrow(nz_idx) == 0) {
+      stop("'mat' has no non-zero entries for CV masking")
+    }
 
     n_test <- max(1, round(nrow(nz_idx) * test_fraction))
 
     cv_masks <- lapply(seq_len(n_restarts), function(i) {
-      test_coords <- nz_idx[sample.int(nrow(nz_idx), n_test), , drop = FALSE]
+
+      test_coords <- nz_idx[
+        sample.int(nrow(nz_idx), n_test),
+        ,
+        drop = FALSE
+      ]
+
       test_mask <- Matrix::sparseMatrix(
         i = test_coords[, 1],
         j = test_coords[, 2],
         x = 1,
         dims = dim(mat)
       )
+
       list(coords = test_coords, mask = test_mask)
     })
   }
 
-  p <- progressr::progressor(steps = length(l1_grid) * n_restarts)
+  p <- progressr::progressor(
+    steps = length(l1_grid) * n_restarts
+  )
 
+  # --- run fits ---
   results <- lapply(seq_along(l1_grid), function(li) {
+
     L1 <- l1_grid[[li]]
 
     fits_and_errors <- lapply(seq_len(n_restarts), function(i) {
+
       if (use_cv) {
+
         test_coords <- cv_masks[[i]]$coords
         test_mask <- cv_masks[[i]]$mask
 
@@ -272,7 +316,9 @@ explore_sparsity <- function(
         if (inherits(train_mat, "sparseMatrix")) {
           train_mat <- methods::as(train_mat, "dgCMatrix")
         }
+
       } else {
+
         train_mat <- mat
         test_mask <- NULL
       }
@@ -286,26 +332,44 @@ explore_sparsity <- function(
       )
 
       err <- if (use_cv) {
+
         RcppML::evaluate(
           fit,
           data = mat,
           mask = test_mask,
           missing_only = TRUE
         )
+
       } else {
+
         fit@misc[["loss"]]
       }
 
-      p(message = sprintf("L1=%s, restart %d/%d", l1_labels[li], i, n_restarts))
+      p(
+        message = sprintf(
+          "L1=%s, restart %d/%d",
+          l1_labels[li],
+          i,
+          n_restarts
+        )
+      )
 
-      list(fit = fit, error = err)
+      list(
+        fit = fit,
+        error = err
+      )
     })
 
     fits <- lapply(fits_and_errors, `[[`, "fit")
     errors <- sapply(fits_and_errors, `[[`, "error")
+
     best_idx <- which.min(errors)
 
-    sps <- do.call(rbind, lapply(fits, factor_sparsity_summary))
+    sps <- do.call(
+      rbind,
+      lapply(fits, factor_sparsity_summary)
+    )
+
     mean_sparsity_w <- mean(sps$sparsity_w, na.rm = TRUE)
     mean_sparsity_h <- mean(sps$sparsity_h, na.rm = TRUE)
 
@@ -321,6 +385,7 @@ explore_sparsity <- function(
     )
   })
 
+  # --- summary ---
   summary_df <- data.frame(
     L1_label = vapply(results, `[[`, character(1), "label"),
     L1_w = vapply(results, function(x) x$L1[1], numeric(1)),
@@ -331,16 +396,48 @@ explore_sparsity <- function(
     stringsAsFactors = FALSE
   )
 
-  p_error <- ggplot2::ggplot(summary_df, ggplot2::aes(x = L1_label, y = error, group = 1)) +
+  # --- Pareto fronts ---
+  summary_df$pareto_w <- pareto_front(
+    summary_df,
+    x = "error",
+    y = "sparsity_w"
+  )
+
+  summary_df$pareto_h <- pareto_front(
+    summary_df,
+    x = "error",
+    y = "sparsity_h"
+  )
+
+  # --- plots ---
+  p_error <- ggplot2::ggplot(
+    summary_df,
+    ggplot2::aes(
+      x = L1_label,
+      y = error,
+      group = 1
+    )
+  ) +
     ggplot2::geom_line() +
     ggplot2::geom_point() +
     ggplot2::labs(
       x = "L1 setting",
-      y = if (use_cv) "held-out loss" else "reconstruction loss"
+      y = if (use_cv) {
+        "held-out loss"
+      } else {
+        "reconstruction loss"
+      }
     ) +
     ggplot2::theme_classic()
 
-  p_sw <- ggplot2::ggplot(summary_df, ggplot2::aes(x = L1_label, y = sparsity_w, group = 1)) +
+  p_sw <- ggplot2::ggplot(
+    summary_df,
+    ggplot2::aes(
+      x = L1_label,
+      y = sparsity_w,
+      group = 1
+    )
+  ) +
     ggplot2::geom_line() +
     ggplot2::geom_point() +
     ggplot2::labs(
@@ -349,7 +446,14 @@ explore_sparsity <- function(
     ) +
     ggplot2::theme_classic()
 
-  p_sh <- ggplot2::ggplot(summary_df, ggplot2::aes(x = L1_label, y = sparsity_h, group = 1)) +
+  p_sh <- ggplot2::ggplot(
+    summary_df,
+    ggplot2::aes(
+      x = L1_label,
+      y = sparsity_h,
+      group = 1
+    )
+  ) +
     ggplot2::geom_line() +
     ggplot2::geom_point() +
     ggplot2::labs(
@@ -358,11 +462,78 @@ explore_sparsity <- function(
     ) +
     ggplot2::theme_classic()
 
+  # --- Pareto plots ---
+  p_pareto_w <- ggplot2::ggplot(
+    summary_df,
+    ggplot2::aes(
+      x = error,
+      y = sparsity_w,
+      label = L1_label
+    )
+  ) +
+    ggplot2::geom_point() +
+    ggplot2::geom_text(
+      nudge_y = 0.01,
+      size = 3
+    ) +
+    ggplot2::geom_point(
+      data = summary_df[summary_df$pareto_w, ],
+      size = 3
+    ) +
+    ggplot2::geom_path(
+      data = summary_df[
+        order(summary_df$error) &
+          summary_df$pareto_w,
+      ]
+    ) +
+    ggplot2::labs(
+      x = "reconstruction error",
+      y = "sparsity of W",
+      title = "Pareto frontier: W"
+    ) +
+    ggplot2::theme_classic()
+
+  p_pareto_h <- ggplot2::ggplot(
+    summary_df,
+    ggplot2::aes(
+      x = error,
+      y = sparsity_h,
+      label = L1_label
+    )
+  ) +
+    ggplot2::geom_point() +
+    ggplot2::geom_text(
+      nudge_y = 0.01,
+      size = 3
+    ) +
+    ggplot2::geom_point(
+      data = summary_df[summary_df$pareto_h, ],
+      size = 3
+    ) +
+    ggplot2::geom_path(
+      data = summary_df[
+        order(summary_df$error) &
+          summary_df$pareto_h,
+      ]
+    ) +
+    ggplot2::labs(
+      x = "reconstruction error",
+      y = "sparsity of H",
+      title = "Pareto frontier: H"
+    ) +
+    ggplot2::theme_classic()
+
   out <- list(
     results = results,
     best_fits = lapply(results, `[[`, "best_fit"),
     summary = summary_df,
-    plot = patchwork::wrap_plots(p_error, p_sw, p_sh),
+    plot = patchwork::wrap_plots(
+      p_error,
+      p_sw,
+      p_sh,
+      p_pareto_w,
+      p_pareto_h
+    ),
     params = list(
       k = k,
       l1_grid = l1_grid,
@@ -373,6 +544,7 @@ explore_sparsity <- function(
   )
 
   class(out) <- "sparsity_exploration"
+
   out
 }
 

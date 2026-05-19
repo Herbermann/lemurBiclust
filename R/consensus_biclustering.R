@@ -33,6 +33,22 @@ library(clue)
   )
 }
 
+
+.compose_nmf_input <- function(X, ...) {
+  if (inherits(X, "Matrix") || is.matrix(X)) {
+    return(list(
+      X = X
+    ))
+  }
+  if (is.list(X)) {
+    if (!all(vapply(X, function(x) inherits(x, "Matrix") || is.matrix(x), logical(1)))) {
+      stop("All elements of X must be matrices or sparse matrices.")
+    }
+
+    stop("Multi-condition factorization not yet implemented.")
+  }
+}
+
 .fit_nmf_replicates <- function(
   X,
   k = 7,
@@ -44,6 +60,10 @@ library(clue)
   tol = 1e-4,
   ...
 ) {
+
+  prep <- .compose_nmf_input(X, ...)
+  X <- prep$X
+
   if (!is.null(seed)) {
     set.seed(seed)
     run_seeds <- sample.int(.Machine$integer.max, reps)
@@ -240,6 +260,3 @@ build_consensus_nmf <- function(
     zero_tol = zero_tol
   )
 }
-
-
-

@@ -25,10 +25,8 @@ SOURCE_DIR <- "/Users/herbermann/code/lemur_biclusters/R"
 files_to_source <- c(
   "preprocess.R",
   "explore_factors.R",
-  "fit_nmf.R",
-  "extract_biclusters.R",
-  "recruitment.R",
-  "test_bicluster.R"
+  "consensus_biclustering.R",
+  "get_biclusters.R"
 )
 
 invisible(lapply(file.path(SOURCE_DIR, files_to_source),source))
@@ -48,6 +46,7 @@ set.seed(42)
 
 # 0. LEMUR standard fit
 ```{r}
+library("scran")
 dec <- modelGeneVar(sce, block = sce$Batch)
 
 n_hvg <- 2000
@@ -63,9 +62,9 @@ sce_hvg <- sce[rowData(sce)$highly_variable, ]
 ```{r}
 n_latents <- 20
 
-lemur_fit = lemur(sce_hvg, design = ~ Batch + Perturbation, n_embedding = n_latents, test_fraction = 0.6) 
+lemur_fit = lemur(sce_hvg, design = ~ Batch + Perturbation, n_embedding = n_latents, test_fraction = 0.5) 
 #lemur_fit = align_harmony(lemur_fit) 
-#lemur_fit <- align_harmony(lemur_fit)
+lemur_fit <- align_harmony(lemur_fit)
 lemur_fit <- test_de(lemur_fit, contrast = cond(Perturbation = "N") - cond(Perturbation = "control"))
 ```
 
@@ -86,8 +85,11 @@ dummy_mat <- preprocess_assay_splits(
   "DE",
   transform = "tanh",
   clip_max = "quantile",
-  clip_max_value = 0.95
+  clip_max_value = 0.95,
+  clip_noise = "fixed",
+  clip_noise_value = 0.05
 )
+hist(as.vector(dummy_mat$train))
 ```
 
 
@@ -105,87 +107,77 @@ The "package" has a small helper function that iterates over proposed factors $k
 ```{r}
 dummy_explore <- explore_factors_progress(
   dummy_mat$train,
-  c(14, 15, 16, 17,
+  c(1, 2, 6, 10, 14, 18, 22, 26, 30),
   n_restarts = 3,
-  tol = 0.05
+  test_fraction = 0.1,
+  tol = 0.05,
+  L1 = c(0.05, 0.05)
 )
 
 print(dummy_explore$plot)
 ```
 
-As for now my experience was that you need less than the best fit point in reconstruction useually.
+```{r}
+dummy_sparse <- explore_sparsity_progress(
+  dummy_mat$train,
+  k = 25,
+  l1_grid = list(
+    c(0, 0),
+    c(0.01, 0.01),
+    c(0.025, 0.025),
+    c(0.05, 0.05),
+    c(0.1, 0.1)
+  ),
+  n_restarts = 3,
+  test_fraction = 0.1,
+  tol = 0.05
+)
+
+print(dummy_sparse$plot)
+```
+
+As for now my experience was that you need less than the best fit point in reconstruction usually.
 
 # 3. Fitting NMF
 
-After deciding which factor numbers to try, there is a think wrapper around the `RcppML` package's NMF fitting. It attempts repeated fits and returns the best in terms of validation set reconstruction error.
+After deciding which factor numbers to try, there is a thin wrapper around the `RcppML` package's NMF fitting. It attempts repeated fits and builds a consensus bicluster. Genes and cells are assigned soft memberships to biclusters based on the fraction of repetitions they are loaded into a given factor.
 
 ```{r}
-n_factor <- 14
-dummy_fit <- fit_nmf(dummy_mat$train, k=n_factor, 5, seed = 42)
+support_obj <- build_consensus_nmf(
+  X = dummy_mat$train,
+  k = 25,
+  reps = 20,
+  L1 = c(0.025, 0.025),
+  zero_tol = 1e-6,
+  factor_weight = 0.5,
+  seed = 1,
+  tol = 0.01
+)
 ```
-
 
 # 4. Translating soft-membership into hard labels
 
-NMF yields soft, continuous and dense memberships of genes and cells to factors. The recruiter function allows recruit cells and genes to a bicluster based on a coherence criterion.
-
-Given the processed matrix and an assay (either the real DE matrix or some transformed version of it), genes and cells are loaded to a bicluster by decreasing loading magnitudes. The function greedily accumulates genes and cells until coherence as measured by rank-1-ness of the bicluster drops below a set threshold or it seems statistically likely ($p>\alpha$) that the bicluster of this size arose by chance.
-
+By defining thresholds for the fraction of recruitments, we turn soft membership into hard labels.
 
 ```{r}
-cuts_dummy <- c(0.98, 0.96, 0.94, 0.92, 0.9, 0.85, 0.8, 0.75, 0.7, 0.6, 0.5, 0.4)
+global_coherence <- irlba::irlba(assay(lemur_fit$training_data, "DE"), nv = 1, nu = 0)$d^2/norm(assay(lemur_fit$training_data, "DE"), type="F")^2
 
-# reconstruct a compact mofified matrix
-up <- dummy_mat$train[1:n_hvg,]
-down <- -dummy_mat$train[(n_hvg+1):(2*n_hvg),]
-rownames(up) <- sub("^up_", "", rownames(up))
-rownames(down) <- sub("^down_", "", rownames(down))
-mat <- up + down
-
-recruitment <- .global_recruiter(
-  mat = dummy_mat$train,
-  assay = mat,#assay(lemur_fit, "DE"),
-  fit = dummy_fit,
-  factors = NULL,
-  cutoffs_pos = cuts_dummy,
-  cutoffs_neg = cuts_dummy,
-  cutoffs_cell = cuts_dummy,
-  cut_pc_abs = 0.75,
-  alpha = 0.05,
-  nnull = 100,
-  return_gap = TRUE,
-  use_irlba = TRUE
+res <- get_biclusters(
+  support_obj,
+  assay(lemur_fit$training_data, "DE"),
+  gene_support_threshold = 1,
+  cell_support_threshold = 1,
+  null_validate = 25
 )
 
-recruitment_log <- recruitment$recruitment_log
-biclusters_summary <- recruitment$biclusters
-
-global_rank <-  irlba::irlba(assay(lemur_fit, "DE"), nv = 1)$d**2/sum(assay(lemur_fit, "DE") * assay(lemur_fit, "DE"))
-
-global_rank_mat <- irlba::irlba(dummy_mat$train, nv = 1)$d**2/sum(dummy_mat$train*dummy_mat$train)
-
-
-recruitment_thrsh_up   <- biclusters_summary$cutoff_pos
-recruitment_thrsh_down <- biclusters_summary$cutoff_neg
-recruitment_thrsh_cell <- biclusters_summary$cutoff_cell
-
-bic_up <- lapply(seq(1:n_factor), function(i) {.fast_extract(sort(dummy_fit$W_pos[,i], decreasing = TRUE), recruitment_thrsh_up[i])})
-names(bic_up) <- paste0("Bic", seq_len(n_factor))
-
-bic_down <- lapply(seq(1:n_factor), function(i) {.fast_extract(sort(dummy_fit$W_neg[,i], decreasing = TRUE), recruitment_thrsh_down[i])})
-names(bic_down) <- paste0("Bic", seq_len(n_factor))
-
-bic_cell <- lapply(seq(1:n_factor), function(i) {.fast_extract(sort(dummy_fit$H[i,], decreasing = TRUE), recruitment_thrsh_cell[i])})
-names(bic_cell) <- paste0("Bic", seq_len(n_factor))
-
-print(biclusters_summary |> select(cutoff_pos, cutoff_neg, cutoff_cell, ngenes_pos, ngenes_neg, ncells, pc1))
-
-
+print(res$summary)
 ```
 
 # 5. Applying to test data
 
-```{r}
+No longer supported (for now)
+
+```
 projections <- .project_biclusters(dummy_fit, dummy_mat$test, recruitment_thrsh_cell)
 
 bic_test <- projections$thresholded
@@ -201,6 +193,7 @@ We can plot test and training embedding on the full data umap to visually confir
 #| fig-height: 24
 #| out-width: 100%
 
+# combine train + test embeddings
 all_embedding <- cbind(
   lemur_fit$training_data$embedding,
   lemur_fit$test_data$embedding
@@ -208,6 +201,7 @@ all_embedding <- cbind(
 
 umap <- uwot::umap(t(all_embedding))
 
+# metadata for all cells
 train_df <- as_tibble(lemur_fit$training_data$colData) |>
   mutate(
     dataset = "train",
@@ -222,50 +216,42 @@ test_df <- as_tibble(lemur_fit$test_data$colData) |>
 
 cell_df <- bind_rows(train_df, test_df) |>
   mutate(
-    UMAP1 = umap[,1],
-    UMAP2 = umap[,2]
+    UMAP1 = umap[, 1],
+    UMAP2 = umap[, 2]
   )
 
+# plot each bicluster as a facet
+plot_df <- bind_rows(lapply(seq_along(res$biclusters), function(i) {
+  bic_obj <- res$biclusters[[i]]
+  bic_name <- paste0("Bic", i)
+  bic_cells <- bic_obj$cell_names
 
-plot_df <- bind_rows(
-  lapply(seq_len(n_factor), \(i) {
-
-    bic_name <- paste0("Bic", i)
-
-    cell_df |>
-      mutate(
-        bic = bic_name,
-
-        membership = case_when(
-          dataset == "train" &
-            cell_id %in% bic_cell[[bic_name]] ~ "train",
-
-          dataset == "test" &
-            cell_id %in% bic_test[[bic_name]] ~ "test",
-
-          TRUE ~ "other"
-        )
-      )
-  })
-)
+  cell_df |>
+    mutate(
+      bic = bic_name,
+      membership = if_else(cell_id %in% bic_cells, "in bicluster", "other")
+    )
+}))
 
 ggplot(plot_df, aes(UMAP1, UMAP2)) +
 
+  # background cells first
   geom_point(
-    aes(color = membership),
+    data = subset(plot_df, membership == "other"),
+    color = "grey92",
     alpha = 0.5,
-    size = 0.4
+    size = 0.2
   ) +
 
-  scale_color_manual(
-    values = c(
-      other = "grey92",
-      train = "#E64B35",
-      test  = "#4DBBD5" 
-    )
+  # bicluster cells on top
+  geom_point(
+    data = subset(plot_df, membership == "in bicluster"),
+    color = "#E64B35",
+    alpha = 0.7,
+    size = 0.5
   ) +
 
-  facet_wrap(~bic, ncol = 2) +
+  facet_wrap(~ bic, ncol = 6) +
   coord_equal() +
   theme_classic()
 ```
@@ -273,91 +259,58 @@ ggplot(plot_df, aes(UMAP1, UMAP2)) +
 
 
 ```{r}
-jaccard <- function(a, b) {
-  length(intersect(a, b)) / length(union(a, b))
+
+pairwise_jaccard <- function(sets) {
+  n <- length(sets)
+
+  out <- matrix(
+    0,
+    nrow = n,
+    ncol = n,
+    dimnames = list(names(sets), names(sets))
+  )
+
+  for (i in seq_len(n)) {
+    a <- unique(as.character(sets[[i]]))
+
+    for (j in i:n) {
+      b <- unique(as.character(sets[[j]]))
+
+      union_size <- length(union(a, b))
+
+      score <- if (union_size == 0) {
+        0
+      } else {
+        length(intersect(a, b)) / union_size
+      }
+
+      out[i, j] <- score
+      out[j, i] <- score
+    }
+  }
+
+  out
 }
 
-cell_jaccard <- outer(
-  seq_along(bic_cell),
-  seq_along(bic_cell),
-  Vectorize(\(i, j) {
-    jaccard(
-      bic_cell[[i]],
-      bic_cell[[j]]
-    )
-  })
-)
+gene_sets <- lapply(res$biclusters, `[[`, "gene_names")
 
-rownames(cell_jaccard) <- names(bic_cell)
-colnames(cell_jaccard) <- names(bic_cell)
+up_sets <- lapply(res$biclusters, `[[`, "gene_up")
+down_sets <- lapply(res$biclusters, `[[`, "gene_down")
 
-bic_genes <- lapply(seq(1:n_factor), function(i) {union(bic_up[[i]], bic_down[[i]])})
+cell_sets <- lapply(res$biclusters, `[[`, "cell_names")
 
-gene_jaccard <- outer(
-  seq_along(bic_up),
-  seq_along(bic_down),
-  Vectorize(\(i, j) {
-    jaccard(
-      bic_up[[i]],
-      bic_down[[j]]
-    )
-  })
-)
+gene_jaccard <- pairwise_jaccard(gene_sets)
 
-rownames(gene_jaccard) <- names(bic_cell)
-colnames(gene_jaccard) <- names(bic_cell)
+up_jaccard <- pairwise_jaccard(up_sets)
+down_jaccard <- pairwise_jaccard(down_sets)
 
-gene_jaccard_up <- outer(
-  seq_along(bic_up),
-  seq_along(bic_up),
-  Vectorize(\(i, j) {
-    jaccard(
-      bic_up[[i]],
-      bic_up[[j]]
-    )
-  })
-)
 
-rownames(gene_jaccard_up) <- names(bic_cell)
-colnames(gene_jaccard_up) <- names(bic_cell)
+cell_jaccard <- pairwise_jaccard(cell_sets)
 
-gene_jaccard_down <- outer(
-  seq_along(bic_down),
-  seq_along(bic_down),
-  Vectorize(\(i, j) {
-    jaccard(
-      bic_down[[i]],
-      bic_down[[j]]
-    )
-  })
-)
-
-rownames(gene_jaccard_down) <- names(bic_cell)
-colnames(gene_jaccard_down) <- names(bic_cell)
-
-pheatmap(
-  cell_jaccard,
-  main = "Cell Jaccard overlap",
-  display_numbers = TRUE
-)
-
-pheatmap(
-  gene_jaccard,
-  main = "Gene (up vs. down) Jaccard overlap",
-  display_numbers = TRUE
-)
-
-pheatmap(
-  gene_jaccard_up,
-  main = "Upregulation Jaccard overlap",
-  display_numbers = TRUE
-)
-
-pheatmap(
-  gene_jaccard_down,
-  main = "Downregulation Jaccard overlap",
-  display_numbers = TRUE
-)
+pheatmap(gene_jaccard)
+pheatmap(up_jaccard)
+pheatmap(down_jaccard)
+pheatmap(cell_jaccard)
 ```
 
 # 6. Downstream?
@@ -367,4 +320,154 @@ Different options from here on.
 - Enrichment of biclusters with cell annotations/other meta data?
 - GSEA can reveal programmatic responses to condition contrast, independently of meta data. Find programmatic responses shared between cell types, as well as subdominant programmes that might get lost in cell type bulk analysis.
 - Finding programms and subprogramms. E.g. `sertdiff(bicA, bicB)` can reveal how bicA differs from bicB when they share significant overlap -> Programmes and Subprogrammes in DE
+
+
+# 6. Downstream?
+
+Different options from here on.
+
+- Enrichment of biclusters with cell annotations/other meta data?
+- GSEA can reveal programmatic responses to condition contrast, independently of meta data. Find programmatic responses shared between cell types, as well as subdominant programmes that might get lost in cell type bulk analysis.
+- Finding programms and subprogramms. E.g. `sertdiff(bicA, bicB)` can reveal how bicA differs from bicB when they share significant overlap -> Programmes and Subprogrammes in DE
+
+
+```{r}
+library(msigdbr)
+library(dplyr)
+library(clusterProfiler)
+
+quick_ora <- function(res, bic){
+  hallmark_df <- msigdbr(species = "Drosophila melanogaster", collection = "H") |>
+    distinct(gs_name, gene_symbol)
+
+  term2gene <- hallmark_df |>
+    transmute(term = gs_name, gene = gene_symbol)
+
+  genes_up <- unique(res$biclusters[[bic]]$gene_up)
+  genes_down <- unique(res$biclusters[[bic]]$gene_down)
+  bg <- unique(rownames(assay(lemur_fit, "DE")))
+
+  # keep only genes that actually exist in the annotation table
+  genes2_up <- intersect(genes_up, term2gene$gene)
+  genes2_down <- intersect(genes_down, term2gene$gene)
+  bg2    <- intersect(bg, term2gene$gene)
+
+
+  ora_up <- enricher(
+    gene = genes2_up,
+    TERM2GENE = term2gene,
+    universe = bg2,
+    minGSSize = 5,
+    pvalueCutoff = 0.2,
+    qvalueCutoff = 0.2
+  )
+
+  ora_down <- enricher(
+    gene = genes2_down,
+    TERM2GENE = term2gene,
+    universe = bg2,
+    minGSSize = 5,
+    pvalueCutoff = 0.2,
+    qvalueCutoff = 0.2
+  )
+  list("up" = ora_up$ID, "down" = ora_down$ID)
+}
+
+lapply(1:length(res$biclusters), function(x){quick_ora(res, x)})
+```
+
+```{r}
+library(msigdbr)
+library(dplyr)
+library(fgsea)
+
+# Fly Hallmark sets
+hallmark_df <- msigdbr(species = "Drosophila melanogaster", collection = "H") |>
+  distinct(gs_name, gene_symbol)
+
+pathways <- split(hallmark_df$gene_symbol, hallmark_df$gs_name)
+
+quick_gsea <- function(res, bic, assay_mat) {
+  cells <- intersect(res$biclusters[[bic]]$cell_names, colnames(assay_mat))
+  other <- setdiff(colnames(assay_mat), cells)
+
+  if (length(cells) < 2 || length(other) < 2) {
+    return(NULL)
+  }
+
+  score <- rowMeans(assay_mat[, cells, drop = FALSE]) -
+    rowMeans(assay_mat[, other, drop = FALSE])
+  #score <- apply(assay_mat, 1, function(g) {
+  #  t.test(g[cells], g[other])$statistic
+  #})
+  score <- sort(score[is.finite(score)], decreasing = TRUE)
+
+  fgsea(
+    pathways = pathways,
+    stats = score,
+    minSize = 5,
+    maxSize = 500,
+    nperm = 1000
+  )
+}
+```
+
+
+```{r}
+gsea_res <- lapply(seq_along(res$biclusters), function(i) {
+  quick_gsea(res, i, assay(lemur_fit$training_data, "DE"))
+})
+
+top_terms <- lapply(gsea_res, function(x) {
+
+  if (is.null(x) || nrow(x) == 0) {
+    return(data.frame(
+      pathway = character(0),
+      NES = numeric(0),
+      padj = numeric(0)
+    ))
+  }
+
+  x <- x[order(x$padj), ]
+
+  head(
+    x[, c("pathway", "NES", "padj")],
+    15
+  )
+})
+
+
+```
+
+
+```{r}
+gene_specificity_scores <- function(res) {
+  bic_genes <- lapply(res$biclusters, function(b) unique(b$gene_names))
+  all_genes <- unlist(bic_genes, use.names = FALSE)
+  
+  gene_freq <- table(all_genes)
+  K <- length(bic_genes)
+  
+  out <- lapply(seq_along(bic_genes), function(i) {
+    genes <- bic_genes[[i]]
+    freq <- as.integer(gene_freq[genes])
+    freq[is.na(freq)] <- 0
+    
+    # higher = more specific to this bicluster
+    specificity <- log((K + 1) / (freq + 1))
+    
+    data.frame(
+      bic = i,
+      gene = genes,
+      freq = freq,
+      specificity = specificity,
+      stringsAsFactors = FALSE
+    )
+  })
+  
+  do.call(rbind, out)
+}
+
+spec_df <- gene_specificity_scores(res)
+```
 
