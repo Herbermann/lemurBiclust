@@ -41,12 +41,21 @@ library(clue)
     ))
   }
   if (is.list(X)) {
-    if (!all(vapply(X, function(x) inherits(x, "Matrix") || is.matrix(x), logical(1)))) {
-      stop("All elements of X must be matrices or sparse matrices.")
+    input_names <- names(X)
+    if (is.null(input_names)) {
+      input_names <- as.character(seq_along(X))
+    } else {
+      empty <- input_names == "" | is.na(input_names)
+      input_names[empty] <- as.character(which(empty))
     }
-
-    stop("Multi-condition factorization not yet implemented.")
+    X_input_factors <- Map(
+      function(x, nm) RcppML::factor_input(x, nm),
+      X,
+      input_names
+    )
+    X_input_factors
   }
+  #stop("X must be a matrix, sparse Matrix, or a list of such matrices.")
 }
 
 .fit_nmf_replicates <- function(
@@ -154,6 +163,7 @@ build_consensus_nmf <- function(
   tol = 1e-4,
   ...
 ) {
+
   fits <- .fit_nmf_replicates(
     X = X,
     k = k,
