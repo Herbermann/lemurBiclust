@@ -1,5 +1,6 @@
 library(RcppML)
 library(clue)
+library(withr)
 
 `%||%` <- function(x, y) if (!is.null(x)) x else y
 
@@ -33,29 +34,29 @@ library(clue)
   )
 }
 
-
 .compose_nmf_input <- function(X, ...) {
   if (inherits(X, "Matrix") || is.matrix(X)) {
-    return(list(
-      X = X
-    ))
+    return(X)
   }
+
   if (is.list(X)) {
     input_names <- names(X)
+
     if (is.null(input_names)) {
       input_names <- as.character(seq_along(X))
     } else {
       empty <- input_names == "" | is.na(input_names)
       input_names[empty] <- as.character(which(empty))
     }
-    X_input_factors <- Map(
+
+    return(Map(
       function(x, nm) RcppML::factor_input(x, nm),
       X,
       input_names
-    )
-    X_input_factors
+    ))
   }
-  #stop("X must be a matrix, sparse Matrix, or a list of such matrices.")
+
+  stop("X must be a matrix, sparse Matrix, or a list of such matrices.")
 }
 
 .fit_nmf_replicates <- function(
@@ -67,34 +68,35 @@ library(clue)
   verbose = FALSE,
   L1 = c(0.05, 0.05),
   tol = 1e-4,
+  nonneg = c(TRUE, TRUE),
   ...
 ) {
+  X <- .compose_nmf_input(X, ...)
 
-  prep <- .compose_nmf_input(X, ...)
-  X <- prep$X
-
-  if (!is.null(seed)) {
-    set.seed(seed)
-    run_seeds <- sample.int(.Machine$integer.max, reps)
+  run_seeds <- if (!is.null(seed)) {
+    withr::with_seed(seed, {
+      sample.int(.Machine$integer.max, reps)
+    })
   } else {
-    run_seeds <- rep(NA_integer_, reps)
+    rep(NA_integer_, reps)
   }
 
   fits <- vector("list", reps)
 
   for (r in seq_len(reps)) {
-    if (is.na(run_seeds[r])) {
-      fits[[r]] <- RcppML::nmf(
+    fits[[r]] <- if (is.na(run_seeds[r])) {
+      RcppML::nmf(
         X,
         k = k,
         threads = threads,
         verbose = verbose,
         L1 = L1,
         tol = tol,
+        nonneg = nonneg,
         ...
       )
     } else {
-      fits[[r]] <- RcppML::nmf(
+      RcppML::nmf(
         X,
         k = k,
         seed = run_seeds[r],
@@ -102,6 +104,7 @@ library(clue)
         verbose = verbose,
         L1 = L1,
         tol = tol,
+        nonneg = nonneg,
         ...
       )
     }
@@ -109,7 +112,6 @@ library(clue)
 
   fits
 }
-
 
 
 .align_factors <- function(ref_fit, fit, factor_weight = 0.5) {
@@ -157,13 +159,14 @@ build_consensus_nmf <- function(
   seed = NULL,
   threads = 0,
   verbose = FALSE,
-  L1 = c(0.05, 0.05),
+  L1 = c(0.0, 0.0),
   factor_weight = 0.5,
   zero_tol = 1e-8,
   tol = 1e-4,
+  nonneg = c(TRUE, TRUE),
   ...
 ) {
-
+    
   fits <- .fit_nmf_replicates(
     X = X,
     k = k,
@@ -173,6 +176,7 @@ build_consensus_nmf <- function(
     verbose = verbose,
     L1 = L1,
     tol = tol,
+    nonneg = nonneg,
     ...
   )
 
@@ -232,6 +236,20 @@ build_consensus_nmf <- function(
     dimnames = list(sample_names, paste0("factor_", seq_len(k)))
   )
 
+  gene_loading_sum <- matrix(
+    0,
+    nrow = n_features,
+    ncol = k,
+    dimnames = list(feature_names, paste0("factor_", seq_len(k)))
+  )
+
+  cell_loading_sum <- matrix(
+    0,
+    nrow = n_samples,
+    ncol = k,
+    dimnames = list(sample_names, paste0("factor_", seq_len(k)))
+  )
+
   for (r in seq_along(fits)) {
     wh <- .get_wh(fits[[r]])
     map <- alignments[[r]]$map
@@ -244,15 +262,25 @@ build_consensus_nmf <- function(
 
       if (length(gene_idx)) {
         gene_votes[gene_idx, f] <- gene_votes[gene_idx, f] + 1
+        gene_loading_sum[gene_idx, f] <-
+          gene_loading_sum[gene_idx, f] +
+          abs(wh$w[gene_idx, mf])
       }
+
       if (length(cell_idx)) {
         cell_votes[cell_idx, f] <- cell_votes[cell_idx, f] + 1
+        cell_loading_sum[cell_idx, f] <-
+          cell_loading_sum[cell_idx, f] +
+          abs(wh$h[mf, cell_idx])
       }
     }
   }
 
   gene_support <- gene_votes / length(fits)
   cell_support <- cell_votes / length(fits)
+
+  gene_loading_mean <- gene_loading_sum / pmax(gene_votes, 1)
+  cell_loading_mean <- cell_loading_sum / pmax(cell_votes, 1)
 
   list(
     models = fits,
@@ -262,6 +290,8 @@ build_consensus_nmf <- function(
     cell_votes = cell_votes,
     gene_support = gene_support,
     cell_support = cell_support,
+    gene_loading_mean = gene_loading_mean,
+    cell_loading_mean = cell_loading_mean,
     feature_names = feature_names,
     sample_names = sample_names,
     k = k,
@@ -269,4 +299,4 @@ build_consensus_nmf <- function(
     factor_weight = factor_weight,
     zero_tol = zero_tol
   )
-}
+  }
