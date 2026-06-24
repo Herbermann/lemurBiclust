@@ -59,10 +59,12 @@ extract_core <- function(
 
   core_method <- match.arg(core_method)
   core_cells_by_bic <- vector("list", length(result_object$biclusters))
+  core_genes_by_bic <- vector("list", length(result_object$biclusters))
 
   if ("test_loading" %in% names(result_object$biclusters[[1]])){
     has_test <- TRUE
     core_cells_test_by_bic <- vector("list", length(result_object$biclusters))
+    core_genes_test_by_bic <- vector("list", length(result_object$biclusters))
   } else {
     has_test <- FALSE
   }
@@ -70,11 +72,16 @@ extract_core <- function(
   if (core_method == "pareto"){
 
     for (i in seq_along(result_object$biclusters)) {
-      out <-  .pareto_core(result_object$biclusters[[i]]$cell_loading)
-      core_cells_by_bic[[i]] <- out$core_cells
+      
+      out_cells <-  .pareto_core(result_object$biclusters[[i]]$cell_loading)
+      core_cells_by_bic[[i]] <- out_cells$core_cells
+
+      out_genes <- .pareto_core(result_object$biclusters[[i]]$gene_loading)
+      core_genes_by_bic[[i]] <- out_genes$core_cells
+
       if (has_test){
-        out <- .pareto_core(result_object$biclusters[[i]]$test_loading)
-        core_cells_test_by_bic[[i]] <- out$core_cells
+        out_cells <- .pareto_core(result_object$biclusters[[i]]$test_loading)
+        core_cells_test_by_bic[[i]] <- out_cells$core_cells
       }
     }
 
@@ -85,11 +92,13 @@ extract_core <- function(
   if (has_test) {
     return(list(
       train = core_cells_by_bic,
-      test = core_cells_test_by_bic
+      test = core_cells_test_by_bic,
+      genes = core_genes_by_bic
     ))
   } else {
     return(list(
-      train = core_cells_by_bic
+      train = core_cells_by_bic,
+      genes = core_genes_by_bic
     ))
   }
 }
