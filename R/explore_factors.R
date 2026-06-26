@@ -103,26 +103,120 @@ explore_factors <- function(
     }
 
     list(
-      k         = k,
-      error     = mean(errors),
-      stability = max(sims, na.rm = TRUE),
-      best_fit  = fits[[best_idx]]
+      k           = k,
+      errors      = errors,
+      stabilities = sims,
+      error       = mean(errors),
+      stability   = max(sims, na.rm = TRUE),
+      best_fit    = fits[[best_idx]]
     )
   })
 
-  error_df <- data.frame(k = ks, error     = sapply(results, `[[`, "error"))
-  stab_df  <- data.frame(k = ks, stability = sapply(results, `[[`, "stability"))
+  # --- prepare data frames for plotting.
+  error_df <- do.call(rbind, lapply(results, function(x) {
+    data.frame(
+      k = x$k,
+      error = x$errors
+    )
+  }))
 
-  p_error <- ggplot(error_df, aes(x = k, y = error)) +
-    geom_line() + geom_point() +
-    labs(x = "k", y = if (use_cv) "test MSE" else "reconstruction error") +
-    theme_classic()
+  error_summary <- error_df |>
+    dplyr::summarise(
+      mean = mean(error),
+      sd = sd(error),
+      .by = k
+    )
 
-  p_stab <- ggplot(stab_df, aes(x = k, y = stability)) +
-    geom_line() + geom_point() +
-    labs(x = "k", y = "mean factor stability") +
-    theme_classic()
+  stab_df <- do.call(rbind, lapply(results, function(x) {
+    data.frame(
+      k = rep(x$k, length(x$stabilities)),
+      stability = x$stabilities
+    )
+  }))
 
+  stab_summary <- stab_df |>
+    dplyr::summarise(
+      mean = mean(stability, na.rm = TRUE),
+      sd   = sd(stability, na.rm = TRUE),
+      .by = k
+  )
+
+  # --- error plot
+  p_error <-
+    ggplot(error_df, aes(k, error)) +
+    geom_errorbar(
+      data = error_summary,
+      aes(
+        x = k,
+        ymin = mean - sd,
+        ymax = mean + sd
+      ),
+      inherit.aes = FALSE,
+      width = 0.15,
+      linewidth = 0.5
+    ) + 
+    geom_ribbon(
+      data = error_summary,
+      aes(
+        x = k,
+        ymin = mean - sd,
+        ymax = mean + sd
+      ),
+      inherit.aes = FALSE,
+      alpha = 0.2
+    )+
+    geom_line(data = error_summary, aes(y = mean)) +
+    geom_point(data = error_summary, aes(y = mean)) +
+    scale_x_continuous(breaks = ks) + 
+    labs(
+      x = "Factor number",
+      y = if (use_cv) "Reconstruction error" else "Reconstruction error"
+    ) +
+    theme_classic(base_size = 14)
+
+
+  # --- stability plot
+  p_stab <-
+  ggplot(stab_df, aes(k, stability)) +
+  geom_errorbar(
+    data = stab_summary,
+    aes(
+      x = k,
+      ymin = mean - sd,
+      ymax = mean + sd
+    ),
+    inherit.aes = FALSE,
+    width = 0.15,
+    linewidth = 0.5
+  ) + 
+  geom_ribbon(
+    data = stab_summary,
+    aes(
+      x = k,
+      ymin = mean - sd,
+      ymax = mean + sd
+    ),
+    inherit.aes = FALSE,
+    alpha = 0.2
+  ) +
+  geom_line(
+    data = stab_summary,
+    aes(y = mean),
+    linewidth = 1
+  ) +
+  geom_point(
+    data = stab_summary,
+    aes(y = mean),
+    size = 2
+  ) +
+  scale_x_continuous(breaks = ks) +
+  labs(
+    x = "Factor number",
+    y = "Factor stability"
+  ) +
+  theme_classic(base_size = 14)
+  
+  # --- output structure.
   structure(
     list(
       results  = results,
@@ -139,6 +233,8 @@ explore_factors <- function(
     class = "factor_exploration"
   )
 }
+
+
 
 explore_factors_progress <- function(..., handler = "cli") {
   progressr::handlers(handler)
