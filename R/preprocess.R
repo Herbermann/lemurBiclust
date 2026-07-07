@@ -121,6 +121,7 @@
   stop("unknown transform")
 }
 
+
 preprocess_assay_fit <- function(
   lemur_fit_class,
   use_assay,
@@ -197,8 +198,8 @@ preprocess_assay_apply <- function(lemur_fit_class, spec) {
   rn <- rownames(mat_raw)
   if (!is.null(rn)) {
     rn <- make.unique(rn)
-    rownames(mat_pos) <- paste0("up_", rn)
-    rownames(mat_neg) <- paste0("down_", rn)
+    rownames(mat_pos) <- paste0("up|", rn)
+    rownames(mat_neg) <- paste0("down|", rn)
   }
   colnames(mat_pos) <- colnames(mat_raw)
   colnames(mat_neg) <- colnames(mat_raw)
@@ -235,5 +236,36 @@ preprocess_assay_splits <- function(
   list(
     train = preprocess_assay(lemur_fit_class$training_data, use_assay, ...),
     test  = preprocess_assay(lemur_fit_class$test_data,     use_assay, ...)
+  )
+}
+
+
+
+
+
+
+compose_multi_condition <- function(split_views, weights = NULL) {
+
+  avail_views <- names(split_views)
+
+  if (is.null(weights)) {
+    weights <- rep(1, length(avail_views))
+  }
+  
+  train_views <- lapply(seq_along(split_views), function(i) {
+    x <- split_views[[i]]$train * weights[i]
+    rownames(x) <- paste0(avail_views[i], "|", rownames(x))
+    x
+  })
+
+  test_views <- lapply(seq_along(split_views), function(i) {
+    x <- split_views[[i]]$test * weights[i]
+    rownames(x) <- paste0(avail_views[i], "|", rownames(x))
+    x
+  })
+
+  list(
+    train = do.call(rbind, train_views),
+    test  = do.call(rbind, test_views)
   )
 }

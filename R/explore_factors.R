@@ -24,8 +24,9 @@ explore_factors <- function(
     n_restarts      = 2,
     test_fraction   = 0.,
     L1              = c(0., 0.),
-    tol             = 1e-4,
-    show_plot       = FALSE
+    tol             = 1e-2,
+    show_plot       = FALSE,
+    verbose         = FALSE
 ) {
 
   # --- validate input ---
@@ -38,18 +39,22 @@ explore_factors <- function(
   if (!is.numeric(test_fraction) || test_fraction < 0 || test_fraction >= 1)
     stop("'test_fraction' must be a number in [0, 1)")
 
-  # -- grab a progressbar ---
   p <- progressr::progressor(steps = length(ks) * n_restarts)
 
 
-  # --- Preps for validation set --
+  # check for cross-validation
   use_cv <- test_fraction > 0
+
+  if (verbose && use_cv) {message("Cross-validation masks sampling.")}
 
   if (use_cv) {
     # eligible pool computed once; mask resampled per restart
     nz_idx <- which(mat != 0, arr.ind = TRUE)
     n_test <- round(nrow(nz_idx) * test_fraction)
   }
+
+  if (verbose && use_cv) {message("Sampling complete.")}
+
 
   # --- main logic ---
   results <- lapply(ks, function(k) {

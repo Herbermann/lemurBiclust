@@ -37,17 +37,45 @@
   k <- min(k, n)
 
   list(
-    core_cells = names(x)[seq_len(k)],
+    selected = names(x)[seq_len(k)],
     core_idx = seq_len(k),
     method = method,
-    core_fraction = k / n,
-    loading_explained = frac_loading[k],
-    elbow_idx = elbow_idx,
-    elbow_explained = elbow_explained
+    core_fraction = unname(k / n),
+    loading_explained = unname(frac_loading[k]),
+    elbow_idx = unname(elbow_idx),
+    elbow_explained = unname(elbow_explained)
   )
 
 }
 
+
+.extract_core_bicluster <- function(
+  bc,
+  core_method = c("pareto", "kmeans")
+) {
+
+  core_method <- match.arg(core_method)
+
+  if (core_method == "kmeans") {
+    stop("Not implemented")
+  }
+
+  out_gene <- .pareto_core(bc$gene_loading)
+  out_cell <- .pareto_core(bc$cell_loading)
+
+  core <- list(
+    genes = out_gene,
+    cells = out_cell
+  )
+
+  if (!is.null(bc$test_loading)) {
+    core$test <- .pareto_core(bc$test_loading)
+  }
+
+  bc$core <- core
+
+  bc
+}
 
 
 extract_core <- function(
@@ -56,69 +84,43 @@ extract_core <- function(
 ) {
 
   core_method <- match.arg(core_method)
-  core_cells_by_bic <- vector("list", length(result_object$biclusters))
-  core_genes_by_bic <- vector("list", length(result_object$biclusters))
 
-  k <- length(result_object$biclusters)
+  biclusters <- lapply(
+    result_object$biclusters,
+    .extract_core_bicluster,
+    core_method = core_method
+  )
 
-  if ("test_loading" %in% names(result_object$biclusters[[1]])){
-    has_test <- TRUE
-    core_cells_test_by_bic <- vector("list", length(result_object$biclusters))
-    core_genes_test_by_bic <- vector("list", length(result_object$biclusters))
-    core_summary <- data.frame(
-      bicluster = seq_len(k),
-      n_genes = integer(k),
-      n_cells = integer(k),
-      n_test = integer(k)
-    )
-  } else {
-    has_test <- FALSE
-    core_summary <- data.frame(
-      bicluster = seq_len(k),
-      n_genes = integer(k),
-      n_cells = integer(k)
-    )
-  }
+  has_test <- !is.null(biclusters[[1]]$core$test)
 
-  if (core_method == "pareto"){
+  k <- length(biclusters)
 
-    for (i in seq_along(result_object$biclusters)) {
-      
-      out_cells <-  .pareto_core(result_object$biclusters[[i]]$cell_loading)
-      core_cells_by_bic[[i]] <- out_cells$core_cells
+  summary <- data.frame(
+    bicluster = seq_len(k),
+    n_genes = integer(k),
+    n_cells = integer(k),
+    stringsAsFactors = FALSE
+  )
 
-      out_genes <- .pareto_core(result_object$biclusters[[i]]$gene_loading)
-      core_genes_by_bic[[i]] <- out_genes$core_cells
-      
-      core_summary$n_cells[i] <- length(out_cells$core_cells)
-      core_summary$n_genes[i] <- length(out_genes$core_cells)
+  if (has_test)
+    summary$n_test <- integer(k)
 
-      if (has_test){
-        out_cells <- .pareto_core(result_object$biclusters[[i]]$test_loading)
-        core_cells_test_by_bic[[i]] <- out_cells$core_cells
+  for (i in seq_len(k)) {
 
-        core_summary$n_test[i] <- length(out_cells$core_cells)
-      }
+    summary$n_genes[i] <-
+      length(biclusters[[i]]$core$genes$selected)
+
+    summary$n_cells[i] <-
+      length(biclusters[[i]]$core$cells$selected)
+
+    if (has_test) {
+      summary$n_test[i] <-
+        length(biclusters[[i]]$core$test$selected)
     }
-
-  } else if (core_method == "kmeans"){
-    stop("Not implemented")
   }
 
+  result_object$biclusters <- biclusters
+  result_object$core_summary <- summary
 
-
-  if (has_test) {
-    return(list(
-      train = core_cells_by_bic,
-      test = core_cells_test_by_bic,
-      genes = core_genes_by_bic,
-      summary = core_summary
-    ))
-  } else {
-    return(list(
-      train = core_cells_by_bic,
-      genes = core_genes_by_bic,
-      summary = core_summary
-    ))
-  }
+  result_object
 }
