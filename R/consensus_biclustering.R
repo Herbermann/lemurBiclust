@@ -20,6 +20,7 @@ library(withr)
   sum(x * y) / (nx * ny)
 }
 
+
 .get_wh <- function(fit) {
   w <- fit$w %||% fit$W
   h <- fit$h %||% fit$H
@@ -27,12 +28,12 @@ library(withr)
   if (is.null(w) || is.null(h)) {
     stop("Could not find factor matrices in the fit object. Expected $w/$h or $W/$H.")
   }
-
   list(
     w = as.matrix(w),
     h = as.matrix(h)
   )
 }
+
 
 .compose_nmf_input <- function(X, ...) {
   if (inherits(X, "Matrix") || is.matrix(X)) {
@@ -64,7 +65,7 @@ library(withr)
   k = 7,
   reps = 50,
   seed = NULL,
-  threads = 0,
+  threads_RcppML = 1,
   verbose = FALSE,
   L1 = c(0.05, 0.05),
   tol = 1e-4,
@@ -83,12 +84,16 @@ library(withr)
 
   fits <- vector("list", reps)
 
+
+  p <- progressr::progressor(steps = reps)
+
+
   for (r in seq_len(reps)) {
     fits[[r]] <- if (is.na(run_seeds[r])) {
       RcppML::nmf(
         X,
         k = k,
-        threads = threads,
+        threads = threads_RcppML,
         verbose = verbose,
         L1 = L1,
         tol = tol,
@@ -100,7 +105,7 @@ library(withr)
         X,
         k = k,
         seed = run_seeds[r],
-        threads = threads,
+        threads = threads_RcppML,
         verbose = verbose,
         L1 = L1,
         tol = tol,
@@ -108,9 +113,90 @@ library(withr)
         ...
       )
     }
+
+    p(message = sprintf("Restart %d/%d", r, reps))
+
   }
 
   fits
+}
+
+
+
+.fit_nmf_replicates_parallel <- function(
+  X,
+  k = 7,
+  reps = 50,
+  seed = NULL,
+  workers = future::availableCores(),
+  verbose = FALSE,
+  L1 = c(0.05, 0.05),
+  tol = 1e-4,
+  nonneg = c(TRUE, TRUE),
+  ...
+) {
+  X <- .compose_nmf_input(X, ...)
+
+  run_seeds <- if (!is.null(seed)) {
+    withr::with_seed(seed, {
+      sample.int(.Machine$integer.max, reps)
+    })
+  } else {
+    rep(NA_integer_, reps)
+  }
+
+  old_plan <- future::plan()
+  on.exit(future::plan(old_plan), add = TRUE)
+
+  future::plan(future::multisession, workers = workers)
+
+  p <- progressr::progressor(steps = reps)
+
+  fits <- future.apply::future_lapply(
+    seq_len(reps),
+    future.seed = TRUE,
+    future.scheduling = 1,
+    FUN = function(r) {
+
+      fit <- if (is.na(run_seeds[r])) {
+        RcppML::nmf(
+          X,
+          k = k,
+          threads = 1,
+          verbose = verbose,
+          L1 = L1,
+          tol = tol,
+          nonneg = nonneg,
+          ...
+        )
+      } else {
+        RcppML::nmf(
+          X,
+          k = k,
+          seed = run_seeds[r],
+          threads = 1,
+          verbose = verbose,
+          L1 = L1,
+          tol = tol,
+          nonneg = nonneg,
+          ...
+        )
+      }
+
+      p(sprintf("Restart %d/%d", r, reps))
+
+      fit
+    }
+  )
+
+  fits
+}
+
+
+
+.fit_nmf_replicates_progress <- function(...){
+  progressr::handlers("cli")
+  progressr::with_progress({.fit_nmf_replicates(...)})
 }
 
 
@@ -151,34 +237,44 @@ library(withr)
 
 
 
-
 build_consensus_nmf <- function(
   X,
   k = 7,
   reps = 50,
   seed = NULL,
   threads = 0,
+  threads_RcppML = 1,
   verbose = FALSE,
   L1 = c(0.0, 0.0),
   factor_weight = 0.5,
   zero_tol = 1e-8,
   tol = 1e-4,
   nonneg = c(TRUE, TRUE),
+  backend = c("serial", "parallel"),
   ...
 ) {
-    
-  fits <- .fit_nmf_replicates(
-    X = X,
-    k = k,
-    reps = reps,
-    seed = seed,
-    threads = threads,
-    verbose = verbose,
-    L1 = L1,
-    tol = tol,
-    nonneg = nonneg,
-    ...
+  backend <- match.arg(backend)
+
+  fit_fun <- switch(
+    backend,
+    serial = .fit_nmf_replicates,
+    parallel = .fit_nmf_replicates_parallel
   )
+
+  fits <- progressr::with_progress({
+    fit_fun(
+      X = X,
+      k = k,
+      reps = reps,
+      seed = seed,
+      threads = threads_RcppML,
+      verbose = verbose,
+      L1 = L1,
+      tol = tol,
+      nonneg = nonneg,
+      ...
+    )
+  })
 
   if (is.null(fits) || length(fits) == 0) {
     stop("No fitted models were produced.")
@@ -249,6 +345,7 @@ build_consensus_nmf <- function(
     ncol = k,
     dimnames = list(sample_names, paste0("factor_", seq_len(k)))
   )
+
 
   for (r in seq_along(fits)) {
     wh <- .get_wh(fits[[r]])
