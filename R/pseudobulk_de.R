@@ -100,3 +100,23 @@
 
   edgeR::topTags(res, n = Inf)$table
 }
+
+
+pseudobulk_analysis <- function(
+  lemur_fit,
+  count_assay,
+  core_results
+) {
+
+  n_bic <- length(core_results$train)
+  outlist <- lapply(seq(n_bic), function(i) {
+    genes <- core_results$genes[[i]]
+    cells <- core_results$test[[i]]
+    pb <- .pseudobulk_bic(lemur_fit$test_data, count_assay, cells, genes, design = lemur_fit$test_data$design)
+    tt <- .run_edger(pb$pb, pb$sample_table, pb$design, lemur_fit$test_data$contrast)
+  })
+
+  names(outlist) <- paste0("bic_", seq_along(outlist)) 
+  
+  return(outlist)
+}

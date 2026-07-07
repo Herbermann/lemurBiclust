@@ -1,17 +1,14 @@
 
 
 .validate_overlap_bic <- function(
-  result_object,
+  core_object,
   embedding_t,
   j
 ) {
 
-  if (!("test_loading" %in% names(result_object$biclusters[[1]]))){ 
-    stop("No valid test data to compare to.")
-  }
 
-  cells_A <- result_object$biclusters[[j]]$cell_names
-  cells_B <- result_object$biclusters[[j]]$test_names
+  cells_A <- core_object$train[[j]]
+  cells_B <- core_object$test[[j]]
 
   cells <- c(cells_A, cells_B)
   X <- embedding_t[cells, , drop = FALSE]
@@ -45,11 +42,11 @@
 
 
 validate_overlap <- function(
-  result_object,
+  core_object,
   embedding
 ) {
 
-  n_bic <- length(result_object$biclusters)
+  n_bic <- length(core_object$train)
   results <- data_frame(
     bicluster = seq(n_bic),
     kNN_mixing = numeric(n_bic),
@@ -59,7 +56,7 @@ validate_overlap <- function(
   embedding_t <- t(embedding)
 
   for (i in seq(n_bic)){
-    temp <- .validate_overlap_bic(result_object, embedding_t, i)
+    temp <- .validate_overlap_bic(core_object, embedding_t, i)
     results$kNN_mixing[i] <- temp[1]
     results$LISI[i] <- temp[2]
   }

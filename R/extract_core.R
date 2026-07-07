@@ -1,7 +1,5 @@
-
-
 .pareto_core <- function(loadings,
-                        fallback_explained = 0.60,
+                        fallback_explained = 0.10,
                         min_keep = 20) {
   x <- loadings[is.finite(loadings) & loadings > 0]
   x <- sort(x, decreasing = TRUE)
