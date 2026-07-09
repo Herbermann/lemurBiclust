@@ -35,31 +35,6 @@ library(withr)
 }
 
 
-.compose_nmf_input <- function(X, ...) {
-  if (inherits(X, "Matrix") || is.matrix(X)) {
-    return(X)
-  }
-
-  if (is.list(X)) {
-    input_names <- names(X)
-
-    if (is.null(input_names)) {
-      input_names <- as.character(seq_along(X))
-    } else {
-      empty <- input_names == "" | is.na(input_names)
-      input_names[empty] <- as.character(which(empty))
-    }
-
-    return(Map(
-      function(x, nm) RcppML::factor_input(x, nm),
-      X,
-      input_names
-    ))
-  }
-
-  stop("X must be a matrix, sparse Matrix, or a list of such matrices.")
-}
-
 .fit_nmf_replicates <- function(
   X,
   k = 7,
@@ -72,7 +47,6 @@ library(withr)
   nonneg = c(TRUE, TRUE),
   ...
 ) {
-  X <- .compose_nmf_input(X, ...)
 
   run_seeds <- if (!is.null(seed)) {
     withr::with_seed(seed, {
@@ -135,7 +109,6 @@ library(withr)
   nonneg = c(TRUE, TRUE),
   ...
 ) {
-  X <- .compose_nmf_input(X, ...)
 
   run_seeds <- if (!is.null(seed)) {
     withr::with_seed(seed, {
@@ -193,7 +166,6 @@ library(withr)
 }
 
 
-
 .fit_nmf_replicates_progress <- function(...){
   progressr::handlers("cli")
   progressr::with_progress({.fit_nmf_replicates(...)})
@@ -235,9 +207,239 @@ library(withr)
   )
 }
 
+.align_replicates <- function(
+  fits,
+  factor_weight = 0.5
+) {
+
+  ref_fit <- fits[[1]]
+  ref_wh <- .get_wh(ref_fit)
+
+  k <- ncol(ref_wh$w)
+
+  alignments <- vector("list", length(fits))
+
+  alignments[[1]] <- list(
+    map = seq_len(k),
+    similarity = diag(k),
+    matched_similarity = rep(1, k)
+  )
+
+  factor_match_similarity <- matrix(
+    NA_real_,
+    nrow = length(fits),
+    ncol = k,
+    dimnames = list(
+      paste0("run_", seq_along(fits)),
+      paste0("factor_", seq_len(k))
+    )
+  )
+
+  factor_match_similarity[1, ] <- 1
+
+  if (length(fits) > 1) {
+    for (r in 2:length(fits)) {
+
+      aln <- .align_factors(
+        ref_fit = ref_fit,
+        fit = fits[[r]],
+        factor_weight = factor_weight
+      )
+
+      alignments[[r]] <- aln
+      factor_match_similarity[r, ] <- aln$matched_similarity
+    }
+  }
+
+  list(
+    alignments = alignments,
+    factor_match_similarity = factor_match_similarity
+  )
+}
 
 
-build_consensus_nmf <- function(
+.factor_consensus <- function(
+  fits,
+  alignments,
+  zero_tol = 1e-6
+) {
+
+  ref_fit <- fits[[1]]
+  ref_wh <- .get_wh(ref_fit)
+
+  k <- ncol(ref_wh$w)
+  n_features <- nrow(ref_wh$w)
+  n_samples <- ncol(ref_wh$h)
+
+  feature_names <- rownames(ref_wh$w)
+  if (is.null(feature_names)) {
+    feature_names <- paste0("feature_", seq_len(n_features))
+  }
+
+  sample_names <- colnames(ref_wh$h)
+  if (is.null(sample_names)) {
+    sample_names <- paste0("sample_", seq_len(n_samples))
+  }
+
+
+  gene_votes <- matrix(
+    0,
+    nrow = n_features,
+    ncol = k,
+    dimnames = list(feature_names, paste0("factor_", seq_len(k)))
+  )
+
+  cell_votes <- matrix(
+    0,
+    nrow = n_samples,
+    ncol = k,
+    dimnames = list(sample_names, paste0("factor_", seq_len(k)))
+  )
+
+  gene_loading_sum <- matrix(
+    0,
+    nrow = n_features,
+    ncol = k,
+    dimnames = list(feature_names, paste0("factor_", seq_len(k)))
+  )
+
+  cell_loading_sum <- matrix(
+    0,
+    nrow = n_samples,
+    ncol = k,
+    dimnames = list(sample_names, paste0("factor_", seq_len(k)))
+  )
+
+
+  for (r in seq_along(fits)) {
+    wh <- .get_wh(fits[[r]])
+    map <- alignments[[r]]$map
+
+    for (f in seq_len(k)) {
+      matched_factor <- map[f]
+
+      gene_idx <- which(abs(wh$w[, matched_factor]) > zero_tol)
+      cell_idx <- which(abs(wh$h[matched_factor, ]) > zero_tol)
+
+      if (length(gene_idx)) {
+        gene_votes[gene_idx, f] <- gene_votes[gene_idx, f] + 1
+        gene_loading_sum[gene_idx, f] <-
+          gene_loading_sum[gene_idx, f] +
+          abs(wh$w[gene_idx, matched_factor])
+      }
+
+      if (length(cell_idx)) {
+        cell_votes[cell_idx, f] <- cell_votes[cell_idx, f] + 1
+        cell_loading_sum[cell_idx, f] <-
+          cell_loading_sum[cell_idx, f] +
+          abs(wh$h[matched_factor, cell_idx])
+      }
+    }
+  }
+
+  gene_support <- gene_votes / length(fits)
+  cell_support <- cell_votes / length(fits)
+
+  gene_loading_mean <- gene_loading_sum / pmax(gene_votes, 1)
+  cell_loading_mean <- cell_loading_sum / pmax(cell_votes, 1)
+
+
+  consensus <- .init_consensus()
+
+  consensus$models <- fits
+  consensus$alignments <- alignments
+
+  consensus$gene_support <- gene_support
+  consensus$cell_support <- cell_support
+
+  consensus$gene_loading_mean <- gene_loading_mean
+  consensus$cell_loading_mean <- cell_loading_mean
+
+  consensus$metadata <- list(
+      k = k,
+      n_runs = length(fits),
+      zero_tol = zero_tol
+  )
+
+  consensus$feature_names <- feature_names
+  consensus$sample_names <- sample_names
+
+  return(consensus)
+}
+
+
+
+##
+.build_consensus_nmf <- function(
+  X,
+  k = 7,
+  reps = 50,
+  seed = NULL,
+  threads = 0,
+  threads_RcppML = 1,
+  verbose = FALSE,
+  L1 = c(0.0, 0.0),
+  factor_weight = 0.5,
+  zero_tol = 1e-8,
+  tol = 1e-4,
+  nonneg = c(TRUE, TRUE),
+  backend = c("serial", "parallel"),
+  ...
+) {
+  backend <- match.arg(backend)
+
+  fit_fun <- switch(
+    backend,
+    serial = .fit_nmf_replicates,
+    parallel = .fit_nmf_replicates_parallel
+  )
+
+  fits <- progressr::with_progress({
+    fit_fun(
+      X = X,
+      k = k,
+      reps = reps,
+      seed = seed,
+      threads = threads_RcppML,
+      verbose = verbose,
+      L1 = L1,
+      tol = tol,
+      nonneg = nonneg,
+      ...
+    )
+  })
+
+  if (is.null(fits) || length(fits) == 0) {
+    stop("No fitted models were produced.")
+  }
+
+  aligned <- .align_replicates(
+    fits,
+    factor_weight = factor_weight
+  )
+
+  consensus <- .factor_consensus(
+    fits,
+    alignments = aligned$alignments,
+    zero_tol = zero_tol
+  )
+
+  consensus$metadata$factor_match_similarity <-
+    aligned$factor_match_similarity
+    
+
+  res <- .init_BiclustResult()
+  
+  res$consensus <- consensus
+  
+  res
+}
+
+##
+
+
+
+legacy_build_consensus_nmf <- function(
   X,
   k = 7,
   reps = 50,

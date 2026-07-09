@@ -207,7 +207,7 @@ preprocess_assay_apply <- function(lemur_fit_class, spec) {
   Matrix::rbind2(mat_pos, mat_neg)
 }
 
-preprocess_assay <- function(
+.preprocess_assay <- function(
   lemur_fit_class,
   use_assay,
   transform        = c("none", "tanh", "asinh"),
@@ -228,14 +228,14 @@ preprocess_assay <- function(
   preprocess_assay_apply(lemur_fit_class, spec)
 }
 
-preprocess_assay_splits <- function(
+preprocess_assay <- function(
   lemur_fit_class,
   use_assay,
   ...
 ) {
   list(
-    train = preprocess_assay(lemur_fit_class$training_data, use_assay, ...),
-    test  = preprocess_assay(lemur_fit_class$test_data,     use_assay, ...)
+    train = .preprocess_assay(lemur_fit_class$training_data, use_assay, ...),
+    test  = .preprocess_assay(lemur_fit_class$test_data,     use_assay, ...)
   )
 }
 
@@ -244,7 +244,7 @@ preprocess_assay_splits <- function(
 
 
 
-compose_multi_condition <- function(split_views, weights = NULL) {
+compose_multi_view <- function(split_views, weights = NULL) {
 
   avail_views <- names(split_views)
 

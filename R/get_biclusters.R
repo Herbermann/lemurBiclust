@@ -1,46 +1,116 @@
-.parse_feature_names <- function(x) {
+.get_factors <- function(
+  result,
+  gene_support_threshold = 0.9,
+  cell_support_threshold = 0.9
+) {
 
-  parts <- strsplit(x, "|", fixed = TRUE)
+  support_object <- result$consensus
 
-  info <- lapply(seq_along(parts), function(i) {
+  has_test <- !is.null(support_object$cell_test_support)
 
-    p <- parts[[i]]
+  gene_support <- support_object$gene_support
+  cell_support <- support_object$cell_support
+  if (has_test){
+    test_support <- support_object$cell_test_support
+    test_names <- support_object$test_names
+  }
 
-    if (length(p) >= 3 && p[2] %in% c("up", "down")) {
 
-      data.frame(
-        id = x[i],
-        view = p[1],
-        direction = p[2],
-        feature = paste(p[-c(1, 2)], collapse = "|"),
-        stringsAsFactors = FALSE
-      )
+  feature_info <- .parse_feature_names(support_object$feature_names)
+  sample_names <- support_object$sample_names
+  
+  k <- support_object$metadata$k
 
-    } else if (length(p) >= 2 && p[1] %in% c("up", "down")) {
+  factor_match_similarity <-
+    support_object$metadata$factor_match_similarity
 
-      data.frame(
-        id = x[i],
-        view = NA_character_,
-        direction = p[1],
-        feature = paste(p[-1], collapse = "|"),
-        stringsAsFactors = FALSE
-      )
+  factors <- vector("list", k)
 
-    } else {
 
-      data.frame(
-        id = x[i],
-        view = NA_character_,
-        direction = NA_character_,
-        feature = paste(p, collapse = "|"),
-        stringsAsFactors = FALSE
-      )
+  for (f in seq_len(k)) {
 
+    gene_idx <- which(gene_support[, f] >= gene_support_threshold)
+    cell_idx <- which(cell_support[, f] >= cell_support_threshold)
+
+    if (has_test) {
+      test_idx <- which(test_support[, f] >= cell_support_threshold)
     }
-  })
 
-  do.call(rbind, info)
+    selected_features <- feature_info[gene_idx, , drop = FALSE]
+
+    cell_loadings <- setNames(
+      support_object$cell_loading_mean[cell_idx, f],
+      sample_names[cell_idx]
+    )
+
+    cell_test_loadings <- setNames(
+      support_object$cell_test_loading_mean[test_idx, f],
+      test_names[test_idx]
+    )
+
+    loading_by_view <- lapply(
+      split(
+        seq_len(nrow(selected_features)),
+        ifelse(
+          is.na(selected_features$view),
+          "default",
+          selected_features$view
+        )
+      ),
+      function(idx) {
+        setNames(
+          support_object$gene_loading_mean[gene_idx[idx], f] *
+            ifelse(selected_features$direction[idx] == "down", -1, 1),
+          selected_features$feature[idx]
+        )
+      }
+    )
+
+    fac <- .init_factor()
+
+    cells <- .init_group()
+    cells$loadings <- cell_loadings
+    cells$elements <- names(cell_loadings)
+
+    test <- .init_group()
+    test$loadings <- cell_test_loadings
+    test$elements <- names(cell_test_loadings)
+
+    views <- lapply(loading_by_view, function(x) {
+      view <- .init_group()
+      view$loadings <- x
+      view$elements <- names(x)
+      view
+    })
+
+    fac$views <- views
+    fac$cells <- cells
+    fac$test <- test
+    
+    fac$metadata <- list(
+      id = sprintf("F%03d", f),
+      match_similarity = factor_match_similarity[, f]
+    )
+
+    factors[[f]] <- fac
+
+  }
+
+  result$factors <- factors
+  result$metadata$gene_support_threshold <- gene_support_threshold
+  result$metadata$cell_support_threshold <- cell_support_threshold
+
+  result
 }
+
+
+
+
+
+
+
+
+
 
 
 get_biclusters <- function(
@@ -102,6 +172,19 @@ get_biclusters <- function(
       sample_names[cell_idx]
     )
 
+    loading_by_view <- lapply(
+      split(seq_len(nrow(selected_features)),
+            ifelse(is.na(selected_features$view),
+                  "default",
+                  selected_features$view)),
+      function(idx) {
+        setNames(
+          support_object$gene_loading_mean[gene_idx[idx], f],
+          selected_features$feature[idx]
+        )
+      }
+    )
+
     bc <- list(
 
       factor = f,
@@ -129,6 +212,8 @@ get_biclusters <- function(
           selected_features$view
         )
       ),
+
+      loading_by_view = loading_by_view,
 
       cell_names = sample_names[cell_idx],
 

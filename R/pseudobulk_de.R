@@ -102,7 +102,7 @@
 }
 
 
-pseudobulk_analysis <- function(
+pseudobulk_analysis_all <- function(
   lemur_fit,
   count_assay,
   core_results
@@ -119,4 +119,21 @@ pseudobulk_analysis <- function(
   names(outlist) <- paste0("bic_", seq_along(outlist)) 
   
   return(outlist)
+}
+
+
+pseudobulk_analysis <- function(
+  lemur_fit,
+  count_assay,
+  genes,
+  cells,
+  contrast = lemur_fit$test_data$contrast
+) {
+
+
+
+  pb <- .pseudobulk_bic(lemur_fit, count_assay, cells, genes, design = lemur_fit$design)
+  tt <- .run_edger(pb$pb, pb$sample_table, pb$design, contrast)
+
+  return(list("result" = tt, "pseudobulk" = pb))
 }
