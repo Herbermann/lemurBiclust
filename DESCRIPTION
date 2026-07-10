@@ -1,0 +1,33 @@
+Package: lemurBiclust
+Title: Consensus NMF Biclustering for LEMUR
+Version: 0.1.0
+Authors@R:
+    person("Tim", "Herbermann",
+           email = "tim.herbermann@embl.de",
+           role = c("aut", "cre"))
+Description: Consensus non-negative matrix factorization for biclustering of
+    LEMUR differential expression predictions over multiple condition contrasts.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+Imports:
+    clue,
+    dplyr,
+    edgeR,
+    FNN,
+    future,
+    future.apply,
+    Matrix,
+    methods,
+    patchwork,
+    progressr,
+    RcppML (>= 1.0.0),
+    rlang,
+    SummarizedExperiment,
+    withr
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+Config/roxygen2/version: 8.0.0

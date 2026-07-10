@@ -30,6 +30,12 @@ explore_factors <- function(
 ) {
 
   # --- validate input ---
+
+  # stop gap to distinguish between lemur input and general matrix
+  if (is.list(mat) && "train" %in% names(mat)) {
+    mat <- mat$train
+  }
+
   if (!is.numeric(ks) || any(ks < 1) || any(ks != floor(ks)))
     stop("'ks' must be a vector of positive integers")
   if (any(ks >= min(dim(mat))))
@@ -256,4 +262,3 @@ plot.factor_exploration <- function(x, ...) {
   print(x$plot)
   invisible(x)
 }
-

@@ -1,8 +1,11 @@
 .init_group <- function() {
-  list(
-    elements = character(0),
-    loadings = numeric(0),
-    metadata = list()
+  structure(
+    list(
+      elements = character(0),
+      loadings = numeric(0),
+      metadata = list()
+    ),
+    class = "grp"
   )
 }
 
@@ -11,7 +14,7 @@
     list(
       views = list(),
       cells = .init_group(),
-      test  = .init_group(),
+      test  = NULL,
       metadata = list()
     ),
     class = "biclust_factor"

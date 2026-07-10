@@ -1,6 +1,3 @@
-library(RcppML)
-library(clue)
-library(withr)
 
 `%||%` <- function(x, y) if (!is.null(x)) x else y
 
@@ -44,7 +41,6 @@ library(withr)
   verbose = FALSE,
   L1 = c(0.05, 0.05),
   tol = 1e-4,
-  nonneg = c(TRUE, TRUE),
   ...
 ) {
 
@@ -71,7 +67,6 @@ library(withr)
         verbose = verbose,
         L1 = L1,
         tol = tol,
-        nonneg = nonneg,
         ...
       )
     } else {
@@ -83,7 +78,6 @@ library(withr)
         verbose = verbose,
         L1 = L1,
         tol = tol,
-        nonneg = nonneg,
         ...
       )
     }
@@ -106,7 +100,6 @@ library(withr)
   verbose = FALSE,
   L1 = c(0.05, 0.05),
   tol = 1e-4,
-  nonneg = c(TRUE, TRUE),
   ...
 ) {
 
@@ -139,7 +132,6 @@ library(withr)
           verbose = verbose,
           L1 = L1,
           tol = tol,
-          nonneg = nonneg,
           ...
         )
       } else {
@@ -151,7 +143,6 @@ library(withr)
           verbose = verbose,
           L1 = L1,
           tol = tol,
-          nonneg = nonneg,
           ...
         )
       }
@@ -206,6 +197,7 @@ library(withr)
     matched_similarity = sim[cbind(seq_len(k), assignment)]
   )
 }
+
 
 .align_replicates <- function(
   fits,
@@ -369,11 +361,11 @@ library(withr)
 
 
 
-##
+
 .build_consensus_nmf <- function(
   X,
   k = 7,
-  reps = 50,
+  reps = 20,
   seed = NULL,
   threads = 0,
   threads_RcppML = 1,
@@ -382,7 +374,6 @@ library(withr)
   factor_weight = 0.5,
   zero_tol = 1e-8,
   tol = 1e-4,
-  nonneg = c(TRUE, TRUE),
   backend = c("serial", "parallel"),
   ...
 ) {
@@ -395,18 +386,17 @@ library(withr)
   )
 
   fits <- progressr::with_progress({
-    fit_fun(
-      X = X,
-      k = k,
-      reps = reps,
-      seed = seed,
-      threads = threads_RcppML,
-      verbose = verbose,
-      L1 = L1,
-      tol = tol,
-      nonneg = nonneg,
-      ...
-    )
+  fit_fun(
+    X = X,
+    k = k,
+    reps = reps,
+    seed = seed,
+    threads_RcppML = threads_RcppML,
+    verbose = verbose,
+    L1 = L1,
+    tol = tol,
+    ...
+  )
   })
 
   if (is.null(fits) || length(fits) == 0) {
@@ -427,7 +417,6 @@ library(withr)
   consensus$metadata$factor_match_similarity <-
     aligned$factor_match_similarity
     
-
   res <- .init_BiclustResult()
   
   res$consensus <- consensus
@@ -435,11 +424,10 @@ library(withr)
   res
 }
 
-##
 
 
 
-legacy_build_consensus_nmf <- function(
+build_consensus_nmf <- function(
   X,
   k = 7,
   reps = 50,
@@ -449,153 +437,25 @@ legacy_build_consensus_nmf <- function(
   verbose = FALSE,
   L1 = c(0.0, 0.0),
   factor_weight = 0.5,
-  zero_tol = 1e-8,
-  tol = 1e-4,
-  nonneg = c(TRUE, TRUE),
+  zero_tol = 1e-6,
+  tol = 1e-2,
   backend = c("serial", "parallel"),
   ...
 ) {
-  backend <- match.arg(backend)
 
-  fit_fun <- switch(
-    backend,
-    serial = .fit_nmf_replicates,
-    parallel = .fit_nmf_replicates_parallel
-  )
-
-  fits <- progressr::with_progress({
-    fit_fun(
-      X = X,
-      k = k,
-      reps = reps,
-      seed = seed,
-      threads = threads_RcppML,
-      verbose = verbose,
-      L1 = L1,
-      tol = tol,
-      nonneg = nonneg,
-      ...
-    )
-  })
-
-  if (is.null(fits) || length(fits) == 0) {
-    stop("No fitted models were produced.")
-  }
-
-  ref_fit <- fits[[1]]
-  ref_wh <- .get_wh(ref_fit)
-
-  k <- ncol(ref_wh$w)
-  n_features <- nrow(ref_wh$w)
-  n_samples <- ncol(ref_wh$h)
-
-  feature_names <- rownames(ref_wh$w)
-  if (is.null(feature_names)) {
-    feature_names <- paste0("feature_", seq_len(n_features))
-  }
-
-  sample_names <- colnames(ref_wh$h)
-  if (is.null(sample_names)) {
-    sample_names <- paste0("sample_", seq_len(n_samples))
-  }
-
-  alignments <- vector("list", length(fits))
-  alignments[[1]] <- list(
-    map = seq_len(k),
-    similarity = diag(k),
-    matched_similarity = rep(1, k)
-  )
-
-  factor_match_similarity <- matrix(
-    NA_real_,
-    nrow = length(fits),
-    ncol = k,
-    dimnames = list(paste0("run_", seq_along(fits)), paste0("factor_", seq_len(k)))
-  )
-  factor_match_similarity[1, ] <- 1
-
-  for (r in 2:length(fits)) {
-    aln <- .align_factors(ref_fit, fits[[r]], factor_weight = factor_weight)
-    alignments[[r]] <- aln
-    factor_match_similarity[r, ] <- aln$matched_similarity
-  }
-
-  gene_votes <- matrix(
-    0,
-    nrow = n_features,
-    ncol = k,
-    dimnames = list(feature_names, paste0("factor_", seq_len(k)))
-  )
-
-  cell_votes <- matrix(
-    0,
-    nrow = n_samples,
-    ncol = k,
-    dimnames = list(sample_names, paste0("factor_", seq_len(k)))
-  )
-
-  gene_loading_sum <- matrix(
-    0,
-    nrow = n_features,
-    ncol = k,
-    dimnames = list(feature_names, paste0("factor_", seq_len(k)))
-  )
-
-  cell_loading_sum <- matrix(
-    0,
-    nrow = n_samples,
-    ncol = k,
-    dimnames = list(sample_names, paste0("factor_", seq_len(k)))
-  )
-
-
-  for (r in seq_along(fits)) {
-    wh <- .get_wh(fits[[r]])
-    map <- alignments[[r]]$map
-
-    for (f in seq_len(k)) {
-      mf <- map[f]
-
-      gene_idx <- which(abs(wh$w[, mf]) > zero_tol)
-      cell_idx <- which(abs(wh$h[mf, ]) > zero_tol)
-
-      if (length(gene_idx)) {
-        gene_votes[gene_idx, f] <- gene_votes[gene_idx, f] + 1
-        gene_loading_sum[gene_idx, f] <-
-          gene_loading_sum[gene_idx, f] +
-          abs(wh$w[gene_idx, mf])
-      }
-
-      if (length(cell_idx)) {
-        cell_votes[cell_idx, f] <- cell_votes[cell_idx, f] + 1
-        cell_loading_sum[cell_idx, f] <-
-          cell_loading_sum[cell_idx, f] +
-          abs(wh$h[mf, cell_idx])
-      }
-    }
-  }
-
-  gene_support <- gene_votes / length(fits)
-  cell_support <- cell_votes / length(fits)
-
-  gene_loading_mean <- gene_loading_sum / pmax(gene_votes, 1)
-  cell_loading_mean <- cell_loading_sum / pmax(cell_votes, 1)
-
-  list(
-    models = fits,
-    alignments = alignments,
-    factor_match_similarity = factor_match_similarity,
-    gene_votes = gene_votes,
-    cell_votes = cell_votes,
-    gene_support = gene_support,
-    cell_support = cell_support,
-    gene_loading_mean = gene_loading_mean,
-    cell_loading_mean = cell_loading_mean,
-    feature_names = feature_names,
-    sample_names = sample_names,
+  .build_consensus_nmf(
+    X,
     k = k,
-    n_runs = length(fits),
+    reps = reps,
+    seed = seed,
+    threads = threads,
+    threads_RcppML = threads_RcppML,
+    verbose = verbose,
+    L1 = L1,
     factor_weight = factor_weight,
-    zero_tol = zero_tol
+    zero_tol = zero_tol,
+    tol = tol,
+    backend = backend,
+    ...
   )
-  }
+}
