@@ -55,7 +55,7 @@ explore_factors <- function(
 
   if (use_cv) {
     # eligible pool computed once; mask resampled per restart
-    nz_idx <- which(mat != 0, arr.ind = TRUE)
+    nz_idx <- Matrix::which(mat != 0, arr.ind = TRUE)
     n_test <- round(nrow(nz_idx) * test_fraction)
   }
 
