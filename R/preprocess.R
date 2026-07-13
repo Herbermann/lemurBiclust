@@ -121,7 +121,7 @@
   stop("unknown transform")
 }
 
-
+#' @export
 preprocess_assay_fit <- function(
   lemur_fit_class,
   use_assay,
@@ -174,6 +174,7 @@ preprocess_assay_fit <- function(
   )
 }
 
+#' @export
 preprocess_assay_apply <- function(lemur_fit_class, spec) {
   mat_raw <- assay(lemur_fit_class, spec$use_assay)
 
@@ -228,6 +229,7 @@ preprocess_assay_apply <- function(lemur_fit_class, spec) {
   preprocess_assay_apply(lemur_fit_class, spec)
 }
 
+#' @export
 preprocess_assay <- function(
   lemur_fit_class,
   use_assay,
@@ -243,7 +245,7 @@ preprocess_assay <- function(
 
 
 
-
+#' @export
 compose_multi_view <- function(split_views, weights = NULL) {
 
   avail_views <- names(split_views)

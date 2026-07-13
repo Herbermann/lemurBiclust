@@ -1,3 +1,4 @@
+#' @export
 biclust <- function(
   mat,
   k,

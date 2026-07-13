@@ -17,7 +17,7 @@
 }
 
 
-
+#' @export
 explore_factors <- function(
     mat,
     ks,
@@ -247,17 +247,20 @@ explore_factors <- function(
 
 
 
+#' @export
 explore_factors_progress <- function(..., handler = "cli") {
   progressr::handlers(handler)
   progressr::with_progress(explore_factors(...))
 }
 
+#' @export
 print.factor_exploration <- function(x, ...) {
   cat("Factor exploration over k =", paste(x$summary$k, collapse = ", "), "\n")
   print(x$summary)
   invisible(x)
 }
 
+#' @export
 plot.factor_exploration <- function(x, ...) {
   print(x$plot)
   invisible(x)

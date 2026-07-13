@@ -1,3 +1,4 @@
+#' @export
 bicNMF <- function(
   mat,
   k,

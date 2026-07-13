@@ -1,3 +1,4 @@
+#' @export
 biclusters <- function(result, bic = NULL) {
 
   bcs <- result$biclusters

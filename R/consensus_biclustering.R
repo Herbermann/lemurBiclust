@@ -426,7 +426,7 @@
 
 
 
-
+#' @export
 build_consensus_nmf <- function(
   X,
   k = 7,
