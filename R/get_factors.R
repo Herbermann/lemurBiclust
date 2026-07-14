@@ -56,19 +56,24 @@
         )
       ),
       function(idx) {
-
         sign <- ifelse(
-          selected_features$direction[idx] == "down",
-          -1,
-          1
-        )
-
+          selected_features$direction[idx] == "down", -1, 1)
         sign[is.na(sign)] <- 1
-
-        setNames(
+        x <- setNames(
           support_object$gene_loading_mean[gene_idx[idx], f] * sign,
           selected_features$feature[idx]
         )
+        ## Collapse duplicated gene flavours by keeping the
+        ## loading with the largest absolute value.
+        if (anyDuplicated(names(x))) {
+          x <- tapply(
+            x,
+            names(x),
+            function(w) w[which.max(abs(w))]
+          )
+          x <- unlist(x, use.names = TRUE)
+        }
+        x
       }
     )
 
