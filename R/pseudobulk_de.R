@@ -63,7 +63,6 @@ bicluster_edgeR <- function(
     res
 }
 
-
 .bicluster_edgeR <- function(
     bic,
     counts,
@@ -71,11 +70,19 @@ bicluster_edgeR <- function(
     group_by,
     design,
     contrast,
+    gene_slot = "default",
+    cell_slot = "test",
     test = c("QLF", "LRT"),
-    cell_slot = c("test", "cells")
+    verbose = FALSE
 ){
     test <- match.arg(test)
 
+    if (!cell_slot %in% names(bic))
+      stop(sprintf("cell_slot '%s' not found.", cell_slot))
+
+    if (!gene_slot %in% names(bic))
+        stop(sprintf("gene_slot '%s' not found.", gene_slot))
+      
     cell_slot <- match.arg(cell_slot)
 
     ## ------------------------------------------------------------
@@ -176,8 +183,6 @@ bicluster_edgeR <- function(
         data = pb_meta
     )
 
-    print(dim(pb_counts))
-    print(dim(design_matrix))
 
     y <- edgeR::estimateDisp(y, design_matrix)
     contr <- limma::makeContrasts(
@@ -203,5 +208,9 @@ bicluster_edgeR <- function(
             contrast = contr
         )
     }
-    edgeR::topTags(out, n = Inf)$table
+  tab <- edgeR::topTags(out, n = Inf)$table
+
+  tab$gene <- rownames(tab)
+
+  tab
 }
