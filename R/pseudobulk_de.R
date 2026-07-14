@@ -1,3 +1,4 @@
+#' @export
 bicluster_edgeR <- function(
     bic,
     counts,
