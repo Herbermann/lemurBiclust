@@ -1,139 +1,206 @@
-.pseudobulk_bic <- function(lemur_test, count_assay, cells, genes, design, group_vars = NULL) {
-  count_assay <- SummarizedExperiment::assay(lemur_test, count_assay)
+bicluster_edgeR <- function(
+    bic,
+    counts,
+    col_data,
+    group_by,
+    design,
+    contrast,
+    gene_slot = "default",
+    cell_slot = "test",
+    test = c("QLF", "LRT"),
+    verbose = FALSE
+){
 
-  cells <- base::intersect(as.character(cells), colnames(count_assay))
-  genes <- base::intersect(as.character(genes), rownames(count_assay))
+    test <- match.arg(test)
 
-  if (length(cells) == 0 || length(genes) == 0) {
-    stop("No genes or cells for bic.")
-  }
+    ## ------------------------------------------------------------
+    ## single bicluster
+    ## ------------------------------------------------------------
 
-  meta <- as.data.frame(lemur_test$colData)
-  meta$cell_id <- rownames(meta)
+    is_single <-
+        is.list(bic) && ("cells" %in% names(bic)) 
 
-  md <- meta[match(cells, meta$cell_id), , drop = FALSE]
-  if (anyNA(md$cell_id)) {
-    stop("Some cells were not found in the metadata.")
-  }
+    if (is_single) {
 
-  if (is.null(group_vars)) {
-    group_vars <- all.vars(delete.response(terms(design)))
-  }
+        return(
+            .bicluster_edgeR(
+                bic = bic,
+                counts = counts,
+                col_data = col_data,
+                group_by = group_by,
+                design = design,
+                contrast = contrast,
+                gene_slot = gene_slot,
+                cell_slot = cell_slot,
+                test = test,
+                verbose = verbose
+            )
+        )
 
-  if (!all(group_vars %in% names(md))) {
-    stop(
-      "Some group_vars are not present in metadata: ",
-      paste(setdiff(group_vars, names(md)), collapse = ", ")
+    }
+
+    ## ------------------------------------------------------------
+    ## list of biclusters
+    ## ------------------------------------------------------------
+
+    res <- lapply(
+        bic,
+        .bicluster_edgeR,
+        counts = counts,
+        col_data = col_data,
+        group_by = group_by,
+        design = design,
+        contrast = contrast,
+        gene_slot = gene_slot,
+        cell_slot = cell_slot,
+        test = test,
+        verbose = verbose
     )
-  }
 
-  md[group_vars] <- lapply(md[group_vars], function(x) {
-    if (!is.factor(x)) factor(x) else x
-  })
+    names(res) <- names(bic)
 
-  md$pb_id <- interaction(md[, group_vars, drop = FALSE],
-                          drop = TRUE, sep = "_", lex.order = TRUE)
-
-  mat <- count_assay[genes, md$cell_id, drop = FALSE]
-  pb <- t(rowsum(t(mat), group = md$pb_id, reorder = FALSE))
-
-  sample_table <- md[!duplicated(md$pb_id), c("pb_id", group_vars), drop = FALSE]
-  rownames(sample_table) <- sample_table$pb_id
-  sample_table <- sample_table[colnames(pb), , drop = FALSE]
-
-  list(
-    pb = pb,
-    sample_table = sample_table,
-    design = design
-  )
+    res
 }
 
 
+.bicluster_edgeR <- function(
+    bic,
+    counts,
+    col_data,
+    group_by,
+    design,
+    contrast,
+    test = c("QLF", "LRT"),
+    cell_slot = c("test", "cells")
+){
+    test <- match.arg(test)
 
-# We wanna make it understand lemur based condition contrasts!
-.as_edger_contrast <- function(contrast) {
-  if (inherits(contrast, "contrast_relation")) {
-    contrast <- evaluate_contrast_tree(
-      contrast,
-      contrast,
-      function(x, y) x
+    cell_slot <- match.arg(cell_slot)
+
+    ## ------------------------------------------------------------
+    ## subset cells
+    ## ------------------------------------------------------------
+
+    cell_names <- intersect(
+        names(bic[[cell_slot]]),
+        colnames(counts)
     )
-  }
 
-  if (inherits(contrast, "model_vec")) {
-    contrast <- unclass(contrast)
-  }
+    counts <- counts[, cell_names, drop = FALSE]
+    meta <- as.data.frame(col_data[cell_names, , drop = FALSE])
 
-  contrast
-}
+    ## ------------------------------------------------------------
+    ## sanity checks
+    ## ------------------------------------------------------------
 
+    if(!all(group_by %in% colnames(meta)))
+        stop("Not all group_by variables found in col_data.")
 
+    ## ------------------------------------------------------------
+    ## pseudobulk IDs
+    ## ------------------------------------------------------------
 
-.run_edger <- function(pb_counts, sample_table, design, contrast) {
-  sample_table <- as.data.frame(sample_table)
-  sample_table <- sample_table[colnames(pb_counts), , drop = FALSE]
-  sample_table[] <- lapply(sample_table, function(x) if (is.character(x)) factor(x) else x)
-
-  design_pb <- model.matrix(design, data = sample_table)
-
-  y <- edgeR::DGEList(counts = pb_counts)
-  keep <- edgeR::filterByExpr(y, design = design_pb)
-  y <- y[keep, , keep.lib.sizes = FALSE]
-  y <- edgeR::calcNormFactors(y)
-
-  y <- edgeR::estimateDisp(y, design_pb)
-  fit <- edgeR::glmQLFit(y, design_pb)
-
-  if (is.null(contrast)){
-    cntrst <- evaluate_contrast_tree(
-      lemur_fit$contrast,
-      lemur_fit$contrast,
-      function(x, y) x - y
+    pb <- interaction(
+        meta[, group_by, drop = FALSE],
+        drop = TRUE
     )
-  }
 
-  contrast <- .as_edger_contrast(contrast)
+    ## ------------------------------------------------------------
+    ## pseudobulk counts
+    ## ------------------------------------------------------------
 
-  stopifnot(any(contrast != 0))
+    pb_levels <- levels(pb)
 
-  res <- edgeR::glmQLFTest(fit, contrast = contrast)
+    pb_counts <- vapply(
+        pb_levels,
+        function(g){
 
-  edgeR::topTags(res, n = Inf)$table
-}
+            Matrix::rowSums(
+                counts[, pb == g, drop = FALSE]
+            )
 
+        },
+        numeric(nrow(counts))
+    )
 
-pseudobulk_analysis_all <- function(
-  lemur_fit,
-  count_assay,
-  core_results
-) {
+    rownames(pb_counts) <- rownames(counts)
+    colnames(pb_counts) <- pb_levels
 
-  n_bic <- length(core_results$biclusters)
-  outlist <- lapply(seq(n_bic), function(i) {
-    genes <- core_results$biclusters[[i]]$gene_names[[i]]
-    cells <- core_results$biclusters[[i]]$cell_names[[i]]
-    pb <- .pseudobulk_bic(lemur_fit$test_data, count_assay, cells, genes, design = lemur_fit$test_data$design)
-    tt <- .run_edger(pb$pb, pb$sample_table, pb$design, lemur_fit$test_data$contrast)
-  })
+    ## ------------------------------------------------------------
+    ## pseudobulk metadata
+    ## ------------------------------------------------------------
 
-  names(outlist) <- paste0("bic_", seq_along(outlist)) 
-  
-  return(outlist)
-}
+    pb_meta <- unique(
+        meta[, group_by, drop = FALSE]
+    )
 
+    pb_meta$.pb <- interaction(
+        pb_meta[, group_by, drop = FALSE],
+        drop = TRUE
+    )
 
-pseudobulk_analysis <- function(
-  lemur_fit,
-  count_assay,
-  genes,
-  cells,
-  contrast = lemur_fit$test_data$contrast
-) {
+    rownames(pb_meta) <- pb_meta$.pb
 
+    pb_meta <- pb_meta[pb_levels, group_by, drop = FALSE]
 
+    pb_meta[] <- lapply(pb_meta, factor)
 
-  pb <- .pseudobulk_bic(lemur_fit, count_assay, cells, genes, design = lemur_fit$design)
-  tt <- .run_edger(pb$pb, pb$sample_table, pb$design, contrast)
+    ## ------------------------------------------------------------
+    ## remove empty pseudobulks
+    ## ------------------------------------------------------------
 
-  return(list("result" = tt, "pseudobulk" = pb))
+    keep <- Matrix::colSums(pb_counts) > 0
+
+    if(any(!keep)){
+
+        warning(
+            sprintf(
+                "Dropping %d empty pseudobulks.",
+                sum(!keep)
+            ),
+            call. = FALSE
+        )
+
+        pb_counts <- pb_counts[, keep, drop = FALSE]
+        pb_meta <- pb_meta[keep, , drop = FALSE]
+    }
+
+    ## ------------------------------------------------------------
+    ## edgeR
+    ## ------------------------------------------------------------
+    y <- edgeR::DGEList(pb_counts)
+    y <- edgeR::calcNormFactors(y)
+    design_matrix <- model.matrix(
+        design,
+        data = pb_meta
+    )
+
+    print(dim(pb_counts))
+    print(dim(design_matrix))
+
+    y <- edgeR::estimateDisp(y, design_matrix)
+    contr <- limma::makeContrasts(
+        contrasts = contrast,
+        levels = design_matrix
+    )
+    if (test == "QLF") {
+        fit <- edgeR::glmQLFit(
+            y,
+            design_matrix
+        )
+        out <- edgeR::glmQLFTest(
+            fit,
+            contrast = contr
+        )
+    } else {
+        fit <- edgeR::glmFit(
+            y,
+            design_matrix
+        )
+        out <- edgeR::glmLRT(
+            fit,
+            contrast = contr
+        )
+    }
+    edgeR::topTags(out, n = Inf)$table
 }
