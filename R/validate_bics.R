@@ -63,4 +63,3 @@ validate_overlap <- function(
 
   results
 }
-

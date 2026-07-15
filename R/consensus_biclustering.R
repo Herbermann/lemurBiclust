@@ -64,7 +64,6 @@
         X,
         k = k,
         threads = threads_RcppML,
-        verbose = verbose,
         L1 = L1,
         tol = tol,
         ...
@@ -75,7 +74,6 @@
         k = k,
         seed = run_seeds[r],
         threads = threads_RcppML,
-        verbose = verbose,
         L1 = L1,
         tol = tol,
         ...
@@ -129,7 +127,6 @@
           X,
           k = k,
           threads = 1,
-          verbose = verbose,
           L1 = L1,
           tol = tol,
           ...
@@ -140,7 +137,6 @@
           k = k,
           seed = run_seeds[r],
           threads = 1,
-          verbose = verbose,
           L1 = L1,
           tol = tol,
           ...
@@ -392,7 +388,6 @@
     reps = reps,
     seed = seed,
     threads_RcppML = threads_RcppML,
-    verbose = verbose,
     L1 = L1,
     tol = tol,
     ...

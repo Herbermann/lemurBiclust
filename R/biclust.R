@@ -58,8 +58,13 @@ biclust <- function(
 
   result <- .extract_core(result)
   if (verbose){
-    message("Candidate bicluster found")
+    message("Candidate bicluster found.")
   }
+
+  if (verbose){
+    message("Running diagnostics.")
+  }
+
   result
 }
 

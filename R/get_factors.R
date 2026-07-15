@@ -56,9 +56,11 @@
         )
       ),
       function(idx) {
+        
         sign <- ifelse(
           selected_features$direction[idx] == "down", -1, 1)
         sign[is.na(sign)] <- 1
+          
         x <- setNames(
           support_object$gene_loading_mean[gene_idx[idx], f] * sign,
           selected_features$feature[idx]
