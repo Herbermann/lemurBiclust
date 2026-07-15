@@ -2,8 +2,8 @@
 
 S3method(bicluster_edgeR,BiclustResult)
 S3method(bicluster_edgeR,BiclusterList)
-S3method(bicluster_gsea,BiclustList)
 S3method(bicluster_gsea,BiclustResult)
+S3method(bicluster_gsea,BiclusterList)
 S3method(plot,factor_exploration)
 S3method(print,BiclustResult)
 S3method(print,factor_exploration)
