@@ -113,12 +113,18 @@ explore_factors <- function(
       }, simplify = TRUE)
     }
 
+    stability <-
+    if (length(na.omit(sims)) == 0)
+        NA_real_
+    else
+        max(sims, na.rm = TRUE)
+    
     list(
       k           = k,
       errors      = errors,
       stabilities = sims,
       error       = mean(errors),
-      stability   = max(sims, na.rm = TRUE),
+      stability   = stability,
       best_fit    = fits[[best_idx]]
     )
   })
@@ -131,13 +137,6 @@ explore_factors <- function(
     )
   }))
 
-  error_summary <- error_df |>
-    dplyr::summarise(
-      mean = mean(error),
-      sd = sd(error),
-      .by = k
-    )
-
   stab_df <- do.call(rbind, lapply(results, function(x) {
     data.frame(
       k = rep(x$k, length(x$stabilities)),
@@ -145,19 +144,30 @@ explore_factors <- function(
     )
   }))
 
-  stab_summary <- stab_df |>
-    dplyr::summarise(
-      mean = mean(stability, na.rm = TRUE),
-      sd   = sd(stability, na.rm = TRUE),
-      .by = k
-  )
+  safe_sd <- function(x) {
+      x <- x[is.finite(x)]
+      if (length(x) <= 1) 0 else stats::sd(x)
+  }
 
+  error_summary <- error_df |>
+      dplyr::summarise(
+          mean = mean(error),
+          sd = safe_sd(error),
+          .by = k
+      )
+
+  stab_summary <- stab_df |>
+      dplyr::summarise(
+          mean = mean(stability, na.rm = TRUE),
+          sd = safe_sd(stability),
+          .by = k
+      )
   # --- error plot
   p_error <-
-    ggplot(error_df, aes(k, error)) +
-    geom_errorbar(
+    ggplot2::ggplot(error_df, ggplot2::aes(k, error)) +
+    ggplot2::geom_errorbar(
       data = error_summary,
-      aes(
+      ggplot2::aes(
         x = k,
         ymin = mean - sd,
         ymax = mean + sd
@@ -166,9 +176,9 @@ explore_factors <- function(
       width = 0.15,
       linewidth = 0.5
     ) + 
-    geom_ribbon(
+    ggplot2::geom_ribbon(
       data = error_summary,
-      aes(
+      ggplot2::aes(
         x = k,
         ymin = mean - sd,
         ymax = mean + sd
@@ -176,56 +186,76 @@ explore_factors <- function(
       inherit.aes = FALSE,
       alpha = 0.2
     )+
-    geom_line(data = error_summary, aes(y = mean)) +
-    geom_point(data = error_summary, aes(y = mean)) +
-    scale_x_continuous(breaks = ks) + 
-    labs(
+    ggplot2::geom_line(data = error_summary, ggplot2::aes(y = mean)) +
+    ggplot2::geom_point(data = error_summary, ggplot2::aes(y = mean)) +
+    ggplot2::scale_x_continuous(breaks = ks) + 
+    ggplot2::labs(
       x = "Factor number",
       y = if (use_cv) "Reconstruction error" else "Reconstruction error"
     ) +
-    theme_classic(base_size = 14)
+    ggplot2::theme_classic(base_size = 14)
 
 
   # --- stability plot
-  p_stab <-
-  ggplot(stab_df, aes(k, stability)) +
-  geom_errorbar(
-    data = stab_summary,
-    aes(
-      x = k,
-      ymin = mean - sd,
-      ymax = mean + sd
-    ),
-    inherit.aes = FALSE,
-    width = 0.15,
-    linewidth = 0.5
-  ) + 
-  geom_ribbon(
-    data = stab_summary,
-    aes(
-      x = k,
-      ymin = mean - sd,
-      ymax = mean + sd
-    ),
-    inherit.aes = FALSE,
-    alpha = 0.2
-  ) +
-  geom_line(
-    data = stab_summary,
-    aes(y = mean),
-    linewidth = 1
-  ) +
-  geom_point(
-    data = stab_summary,
-    aes(y = mean),
-    size = 2
-  ) +
-  scale_x_continuous(breaks = ks) +
-  labs(
-    x = "Factor number",
-    y = "Factor stability"
-  ) +
-  theme_classic(base_size = 14)
+
+  if (all(is.na(stab_summary$mean))) {
+
+    p_stab <-
+      ggplot2::ggplot() +
+      ggplot2::annotate(
+        "text",
+        x = 1,
+        y = 1,
+        label = "Stability requires ≥2 restarts"
+      ) +
+      ggplot2::theme_void() +
+      ggplot2::labs(
+        title = "Factor stability"
+      )
+
+  } else {
+
+    p_stab <-
+      ggplot2::ggplot(stab_df, ggplot2::aes(k, stability)) +
+      ggplot2::geom_errorbar(
+        data = stab_summary,
+        ggplot2::aes(
+          x = k,
+          ymin = mean - sd,
+          ymax = mean + sd
+        ),
+        inherit.aes = FALSE,
+        width = 0.15,
+        linewidth = 0.5
+      ) +
+      ggplot2::geom_ribbon(
+        data = stab_summary,
+        ggplot2::aes(
+          x = k,
+          ymin = mean - sd,
+          ymax = mean + sd
+        ),
+        inherit.aes = FALSE,
+        alpha = 0.2
+      ) +
+      ggplot2::geom_line(
+        data = stab_summary,
+        ggplot2::aes(y = mean),
+        linewidth = 1
+      ) +
+      ggplot2::geom_point(
+        data = stab_summary,
+        ggplot2::aes(y = mean),
+        size = 2
+      ) +
+      ggplot2::scale_x_continuous(breaks = ks) +
+      ggplot2::labs(
+        x = "Factor number",
+        y = "Factor stability"
+      ) +
+      ggplot2::theme_classic(base_size = 14)
+
+  }
   
   # --- output structure.
   structure(

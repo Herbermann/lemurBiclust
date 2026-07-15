@@ -135,14 +135,14 @@ preprocess_assay_fit <- function(
   clip_noise <- match.arg(clip_noise)
   clip_max   <- match.arg(clip_max)
 
-  if (!use_assay %in% assayNames(lemur_fit_class)) {
+  if (!use_assay %in% SummarizedExperiment::assayNames(lemur_fit_class)) {
     stop(sprintf(
       "'use_assay' must be one of: %s",
-      paste(assayNames(lemur_fit_class), collapse = ", ")
+      paste(SummarizedExperiment::assayNames(lemur_fit_class), collapse = ", ")
     ))
   }
 
-  mat_raw <- assay(lemur_fit_class, use_assay)
+  mat_raw <- SummarizedExperiment::assay(lemur_fit_class, use_assay)
 
   noise_thr <- NULL
   if (clip_noise == "fixed") {
@@ -176,7 +176,7 @@ preprocess_assay_fit <- function(
 
 #' @export
 preprocess_assay_apply <- function(lemur_fit_class, spec) {
-  mat_raw <- assay(lemur_fit_class, spec$use_assay)
+  mat_raw <- SummarizedExperiment::assay(lemur_fit_class, spec$use_assay)
 
   if (!is.null(spec$noise_thr) && spec$noise_thr > 0) {
     mat_raw <- .apply_fixed_noise_clip(mat_raw, spec$noise_thr)
