@@ -58,7 +58,7 @@ biclust <- function(
   }
   ## 4. Extract candidate biclusters
 
-  result <- .extract_core(result)
+  result <- .get_biclusters(result)
   if (verbose){
     message("Candidate bicluster found.")
   }
