@@ -246,13 +246,12 @@ bicluster_gene_sets <- function(
 #' @param de Result of 'bicluster_edgeR()' used for creating a signed ranking of genes
 #' 
 #' @export
-#' @export
 bicluster_gsea <- function(x, ...) {
     UseMethod("bicluster_gsea")
 } 
 
 #' @export
-bicluster_gsea <- function(
+bicluster_gsea.BiclustList <- function(
     bics,
     de
 ) {
