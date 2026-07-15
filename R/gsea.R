@@ -251,7 +251,7 @@ bicluster_gsea <- function(x, ...) {
 } 
 
 #' @export
-bicluster_gsea.BiclustList <- function(
+bicluster_gsea.BiclusterList <- function(
     bics,
     de
 ) {
