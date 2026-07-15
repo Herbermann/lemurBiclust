@@ -242,9 +242,15 @@ bicluster_gene_sets <- function(
 #' 
 #' Perform GSEA of bicluster gene sets using fgsea.
 #' 
-#' @param bics bicluster or list of biclusters, as returned by bicluster()
+#' @param x bicluster or list of biclusters, as returned by bicluster() or BiclustResult object
 #' @param de Result of 'bicluster_edgeR()' used for creating a signed ranking of genes
 #' 
+#' @export
+#' @export
+bicluster_gsea <- function(x, ...) {
+    UseMethod("bicluster_gsea")
+} 
+
 #' @export
 bicluster_gsea <- function(
     bics,
@@ -362,4 +368,34 @@ bicluster_gsea <- function(
     }
 
     dplyr::bind_rows(temp, .id = "bicluster")
+}
+
+
+
+#' @export
+bicluster_gsea.BiclustResult <- function(
+    result,
+    de = NULL
+){
+
+    analyses <- analyses(result)
+
+    if (is.null(de)){
+      if (is.null(analyses$edgeR)) {
+          stop(
+              "No edgeR analysis found. Run bicluster_edgeR() first.",
+              call. = FALSE
+          ) } else {
+            edge <- analyses$edgeR
+      }
+    } else {
+        edge <- de
+    }
+  
+    result$analyses$gsea <- bicluster_gsea(
+        biclusters(result),
+        edge
+    )
+
+    result
 }

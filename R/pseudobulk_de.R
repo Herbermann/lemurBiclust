@@ -70,7 +70,6 @@ bicluster_edgeR.BiclusterList <- function(
 }
 
 
-
 #' @export
 bicluster_edgeR.BiclustResult <- function(
     result,
