@@ -30,6 +30,7 @@
       biclusters      = list(),
       summary         = list(),
       diagnostics     = list(),
+      analyses        = list(),
       metadata        = list()
     ),
     class = "BiclustResult"

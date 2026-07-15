@@ -1,5 +1,11 @@
 #' @export
-biclusters <- function(result, bic = NULL) {
+biclusters<- function(result, bic = NULL) {
+
+  if (!inherits(result, "BiclustResult"))
+    stop(
+        "'result' must be a BiclustResult.",
+        call. = FALSE
+    )
 
   bcs <- result$biclusters
   ids <- vapply(bcs, function(x) x$metadata$id, character(1))
@@ -48,5 +54,55 @@ biclusters <- function(result, bic = NULL) {
   if (length(out) == 1L) {
     return(out[[1]])
   }
-  out
+  structure(
+    out,
+    class = "BiclusterList"
+  )
+}
+
+
+
+
+
+#' @export
+analyses <- function(result) {
+
+    if (!inherits(result, "BiclustResult"))
+        stop("'result' must be a BiclustResult.",
+             call. = FALSE)
+
+    result$analyses
+}
+
+
+#' @export
+consensus <- function(result) {
+
+    if (!inherits(result, "BiclustResult"))
+        stop("'result' must be a BiclustResult.",
+             call. = FALSE)
+
+    result$consensus
+}
+
+
+#' @export
+factors <- function(result) {
+
+    if (!inherits(result, "BiclustResult"))
+        stop("'result' must be a BiclustResult.",
+             call. = FALSE)
+
+    result$factors
+}
+
+
+#' @export
+diagnostics <- function(result) {
+
+    if (!inherits(result, "BiclustResult"))
+        stop("'result' must be a BiclustResult.",
+             call. = FALSE)
+
+    result$diagnostics
 }

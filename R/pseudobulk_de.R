@@ -1,5 +1,11 @@
 #' @export
-bicluster_edgeR <- function(
+bicluster_edgeR <- function(x, ...) {
+    UseMethod("bicluster_edgeR")
+}
+
+
+#' @export
+bicluster_edgeR.BiclusterList <- function(
     bic,
     counts,
     col_data,
@@ -62,6 +68,41 @@ bicluster_edgeR <- function(
 
     res
 }
+
+
+
+#' @export
+bicluster_edgeR.BiclustResult <- function(
+    result,
+    counts,
+    col_data,
+    group_by,
+    design,
+    contrast,
+    gene_slot = "default",
+    cell_slot = "test",
+    test = c("QLF", "LRT"),
+    verbose = FALSE
+){
+
+    bic <- biclusters(result)
+
+    result$analyses$edgeR <- bicluster_edgeR(
+        bic = bic,
+        counts = counts,
+        col_data = col_data,
+        group_by = group_by,
+        design = design,
+        contrast = contrast,
+        gene_slot = gene_slot,
+        cell_slot = cell_slot,
+        test = test,
+        verbose = verbose
+    )
+
+    result
+}
+
 
 .bicluster_edgeR <- function(
     bic,

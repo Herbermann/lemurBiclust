@@ -1,3 +1,5 @@
+#' Biclustering of LEMUR differential expression
+
 #' @export
 biclust <- function(
   mat,
