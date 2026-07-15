@@ -398,3 +398,14 @@ bicluster_gsea.BiclustResult <- function(
 
     result
 }
+
+
+
+
+
+annotate_biclusters <- function(
+  bics,
+  pathways
+) {
+  
+}
