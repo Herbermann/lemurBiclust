@@ -273,34 +273,24 @@ bicluster_edgeR.BiclustResult <- function(
         data = pb_meta
     )
 
-
     y <- edgeR::estimateDisp(y, design_matrix)
-    contr <- limma::makeContrasts(
-        contrasts = contrast,
-        levels = design_matrix
-    )
+
     if (test == "QLF") {
-        fit <- edgeR::glmQLFit(
-            y,
-            design_matrix
-        )
+        fit <- edgeR::glmQLFit(y, design_matrix)
         out <- edgeR::glmQLFTest(
             fit,
-            contrast = contr
+            contrast = contrast
         )
     } else {
-        fit <- edgeR::glmFit(
-            y,
-            design_matrix
-        )
+        fit <- edgeR::glmFit(y, design_matrix)
         out <- edgeR::glmLRT(
             fit,
-            contrast = contr
+            contrast = contrast
         )
     }
-  tab <- edgeR::topTags(out, n = Inf)$table
 
-  tab$gene <- rownames(tab)
+    tab <- edgeR::topTags(out, n = Inf)$table
+    tab$gene <- rownames(tab)
 
-  tab
+    tab
 }
