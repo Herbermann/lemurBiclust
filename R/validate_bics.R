@@ -1,5 +1,3 @@
-
-
 .validate_overlap_bic <- function(
   core_object,
   embedding_t,

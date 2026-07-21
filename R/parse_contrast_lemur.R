@@ -1,3 +1,13 @@
+.parse_contrast <- function(contrast, formula) {
+    lemur:::parse_contrast(
+        contrast = {{ contrast }},
+        formula = formula,
+        simplify = TRUE
+    )
+}
+
+
+
 # VERBATIM COPY FROM LEMUR
 
 # This function is adapted from proDA

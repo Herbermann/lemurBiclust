@@ -7,8 +7,8 @@ bicluster_edgeR <- function(x, ...) {
 #' @export
 bicluster_edgeR.BiclusterList <- function(
     bic,
-    counts,
-    col_data,
+    lemur_fit,
+    use_assay = "counts",
     group_by,
     design,
     contrast,
@@ -18,7 +18,31 @@ bicluster_edgeR.BiclusterList <- function(
     verbose = FALSE
 ){
 
-    test <- match.arg(test)
+    sce <- switch(
+        cell_slot,
+        test = lemur_fit$test_data,
+        stop("Only 'test' is currently supported.")
+    )
+
+    counts   <- SingleCellExperiment::assay(sce, use_assay)
+    col_data <- SingleCellExperiment::colData(sce)
+
+    ## ------------------------------------------------------------
+    ## Prepare formula for LEMUR contrast parsing
+    ## ------------------------------------------------------------
+
+    mf <- stats::model.frame(design, data = as.data.frame(col_data))
+
+    mm <- stats::model.matrix(design, data = mf)
+
+    attr(design, "xlevels") <- stats::.getXlevels(stats::terms(design), mf)
+    attr(design, "vars_xlevels") <- lapply(mf, function(x) if (is.factor(x)) levels(x) else NULL)
+    attr(design, "contrasts") <-  attr(mm, "contrasts")
+
+    contrast <- .parse_contrast(
+        contrast = {{ contrast }},
+        formula = design
+    )
 
     ## ------------------------------------------------------------
     ## single bicluster
@@ -73,8 +97,8 @@ bicluster_edgeR.BiclusterList <- function(
 #' @export
 bicluster_edgeR.BiclustResult <- function(
     result,
-    counts,
-    col_data,
+    lemur_fit,
+    use_assay = "counts",
     group_by,
     design,
     contrast,
@@ -84,6 +108,32 @@ bicluster_edgeR.BiclustResult <- function(
     verbose = FALSE
 ){
 
+    sce <- switch(
+        cell_slot,
+        test = lemur_fit$test_data,
+        stop("Only 'test' is currently supported.")
+    )
+
+    counts   <- SingleCellExperiment::assay(sce, use_assay)
+    col_data <- SingleCellExperiment::colData(sce)
+
+    ## ------------------------------------------------------------
+    ## Prepare formula for LEMUR contrast parsing
+    ## ------------------------------------------------------------
+
+    mf <- stats::model.frame(design, data = as.data.frame(col_data))
+    mm <- stats::model.matrix(design, data = mf)
+
+    attr(design, "xlevels") <- stats::.getXlevels(stats::terms(design), mf)
+    attr(design, "vars_xlevels") <- lapply(mf, function(x) if (is.factor(x)) levels(x) else NULL)
+    attr(design, "contrasts") <-  attr(mm, "contrasts")
+
+    contrast <- .parse_contrast(
+        contrast = {{ contrast }},
+        formula = design
+    )
+
+    
     bic <- biclusters(result)
 
     result$analyses$edgeR <- bicluster_edgeR(
