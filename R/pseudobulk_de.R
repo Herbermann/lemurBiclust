@@ -138,8 +138,8 @@ bicluster_edgeR.BiclustResult <- function(
 
     result$analyses$edgeR <- bicluster_edgeR(
         bic = bic,
-        counts = counts,
-        col_data = col_data,
+        lemur_fit = lemur_fit,
+        use_assay = use_assay,
         group_by = group_by,
         design = design,
         contrast = contrast,
