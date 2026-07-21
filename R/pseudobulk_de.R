@@ -24,8 +24,8 @@ bicluster_edgeR.BiclusterList <- function(
         stop("Only 'test' is currently supported.")
     )
 
-    counts   <- SingleCellExperiment::assay(sce, use_assay)
-    col_data <- SingleCellExperiment::colData(sce)
+    counts   <- SummarizedExperiment::assay(sce, use_assay)
+    col_data <- SummarizedExperiment::colData(sce)
 
     ## ------------------------------------------------------------
     ## Prepare formula for LEMUR contrast parsing
@@ -114,8 +114,8 @@ bicluster_edgeR.BiclustResult <- function(
         stop("Only 'test' is currently supported.")
     )
 
-    counts   <- SingleCellExperiment::assay(sce, use_assay)
-    col_data <- SingleCellExperiment::colData(sce)
+    counts   <- SummarizedExperiment::assay(sce, use_assay)
+    col_data <- SummarizedExperiment::colData(sce)
 
     ## ------------------------------------------------------------
     ## Prepare formula for LEMUR contrast parsing
@@ -133,7 +133,7 @@ bicluster_edgeR.BiclustResult <- function(
         formula = design
     )
 
-    
+
     bic <- biclusters(result)
 
     result$analyses$edgeR <- bicluster_edgeR(
