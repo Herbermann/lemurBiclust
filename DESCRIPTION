@@ -25,7 +25,10 @@ Imports:
     RcppML (>= 1.0.0),
     rlang,
     SummarizedExperiment,
-    withr
+    withr,
+    ggplot2,
+    lemur,
+    SingleCellExperiment
 Suggests:
     fgsea,
     knitr,

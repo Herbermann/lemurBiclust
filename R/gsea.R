@@ -11,6 +11,7 @@
 custom_gsea <- function(
     pathways,
     stats,
+    nproc = 1,
     ...
 ){
     if(!requireNamespace("fgsea", quietly = TRUE))
@@ -35,6 +36,7 @@ custom_gsea <- function(
                 fgsea::fgsea(
                     pathways = pathways,
                     stats = stats,
+                    nproc = nproc,
                     ...
                 )
             )
@@ -71,6 +73,7 @@ custom_gsea <- function(
                 fgsea::fgsea(
                     pathways = pathways,
                     stats = x,
+                    nproc = nproc, 
                     ...
                 )
             )
@@ -246,15 +249,17 @@ bicluster_gene_sets <- function(
 #' @param de Result of 'bicluster_edgeR()' used for creating a signed ranking of genes
 #' 
 #' @export
-bicluster_gsea <- function(x, ...) {
+bicluster_gsea <- function(x, de) {
     UseMethod("bicluster_gsea")
 } 
 
 #' @export
 bicluster_gsea.BiclusterList <- function(
-    bics,
+    x,
     de
 ) {
+    bics <- x
+    
     stats <- edgeR_ranking(de)
     gene_sets <- .bicluster_gene_sets(bics)
     n_views <- gene_sets$n_views
@@ -373,9 +378,10 @@ bicluster_gsea.BiclusterList <- function(
 
 #' @export
 bicluster_gsea.BiclustResult <- function(
-    result,
+    x,
     de = NULL
 ){
+    result <- x
 
     analyses <- analyses(result)
 

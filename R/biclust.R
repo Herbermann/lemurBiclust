@@ -70,5 +70,3 @@ biclust <- function(
   result
 }
 
-
-

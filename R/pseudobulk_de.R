@@ -6,7 +6,7 @@ bicluster_edgeR <- function(x, ...) {
 
 #' @export
 bicluster_edgeR.BiclusterList <- function(
-    bic,
+    x,
     lemur_fit,
     use_assay = "counts",
     group_by,
@@ -17,7 +17,8 @@ bicluster_edgeR.BiclusterList <- function(
     test = c("QLF", "LRT"),
     verbose = FALSE
 ){
-
+    bic <- x
+  
     sce <- switch(
         cell_slot,
         test = lemur_fit$test_data,
@@ -96,7 +97,7 @@ bicluster_edgeR.BiclusterList <- function(
 
 #' @export
 bicluster_edgeR.BiclustResult <- function(
-    result,
+    x,
     lemur_fit,
     use_assay = "counts",
     group_by,
@@ -107,7 +108,8 @@ bicluster_edgeR.BiclustResult <- function(
     test = c("QLF", "LRT"),
     verbose = FALSE
 ){
-
+    result <- x
+  
     sce <- switch(
         cell_slot,
         test = lemur_fit$test_data,
@@ -137,7 +139,7 @@ bicluster_edgeR.BiclustResult <- function(
     bic <- biclusters(result)
 
     result$analyses$edgeR <- bicluster_edgeR(
-        bic = bic,
+        x = bic,
         lemur_fit = lemur_fit,
         use_assay = use_assay,
         group_by = group_by,
