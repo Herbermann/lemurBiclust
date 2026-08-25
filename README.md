@@ -1,93 +1,477 @@
-# lemur_biclusters
+# lemurBiclust
 
 
+# lemurBiclust
 
-## Getting started
+`lemurBiclust` identifies structured cellular programs within
+differential expression patterns estimated by
+[LEMUR](https://github.com/const-ae/lemur).
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Single-cell perturbation experiments can contain heterogeneous responses
+that are difficult to describe with a single differential expression
+contrast. `lemurBiclust` uses a biclustering procedure derived from NMF
+to identify groups of genes and cells that jointly contribute to
+differential expression, providing a compact representation of
+heterogeneous differential programs.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+The package is currently an **early prototype (v0.1.0)** and
+proof-of-concept. The core workflow is functional, but the API,
+documentation, features, and installation may change substantially,
 
-## Add your files
+## Overview
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+A typical `lemurBiclust` analysis consists of four steps:
 
-```
-cd existing_repo
-git remote add origin https://git.embl.org/herbermann/lemur_biclusters.git
-git branch -M main
-git push -uf origin main
-```
+1.  Fit a differential expression model with LEMUR.
+2.  Explore an appropriate number of biclustering factors.
+3.  Construct stable gene-cell biclusters.
+4.  Characterize the resulting programs using conventional differential
+    expression and gene-set enrichment analysis.
 
-## Integrate with your tools
-
-* [Set up project integrations](https://git.embl.org/herbermann/lemur_biclusters/-/settings/integrations)
-
-## Collaborate with your team
-
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+This README demonstrates the workflow using the glioblastoma example
+data distributed with `lemur`.
 
 ## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+`lemurBiclust` is currently available as a development package.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+``` r
+# install.packages("remotes")
+remotes::install_github("Herbermann/lemurBiclust")
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+## Example
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+### LEMUR differential expression
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+We start from the example glioblastoma single-cell dataset provided by
+LEMUR. The data contain cells from multiple patients under control and
+panobinostat treatment.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+``` r
+library(tidyverse)
+library(SingleCellExperiment)
+library(lemur)
+library(lemurBiclust)
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+set.seed(42)
 
-## License
-For open source projects, say how it is licensed.
+data("glioblastoma_example_data", package = "lemur")
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+glioblastoma_example_data
+```
+
+    class: SingleCellExperiment 
+    dim: 300 5000 
+    metadata(0):
+    assays(2): counts logcounts
+    rownames(300): ENSG00000210082 ENSG00000118785 ... ENSG00000167468
+      ENSG00000139289
+    rowData names(6): gene_id symbol ... strand. source
+    colnames(5000): CGCCAGAGCGCA AGCTTTACTGCG ... TGAACAGTGCGT TGACCGGAATGC
+    colData names(10): patient_id treatment_id ... sample_id id
+    reducedDimNames(0):
+    mainExpName: NULL
+    altExpNames(0):
+
+We fit a LEMUR model accounting for patient identity and treatment
+condition. Half of the cells are held out from model. The training/test
+separation is also respected by `lemurBiclust`.
+
+``` r
+fit <- lemur(
+    glioblastoma_example_data,
+    design = ~ patient_id + condition,
+    n_embedding = 15,
+    test_fraction = 0.5
+)
+
+fit <- test_de(
+    fit,
+    contrast =
+        cond(condition = "panobinostat") -
+        cond(condition = "ctrl")
+)
+```
+
+`lemurBiclust` operates on the differential expression structure
+estimated by LEMUR. `preprocess_assay()` prepares this matrix for
+biclustering. Here, preprocessing respects the split by training and
+test data.
+
+``` r
+mat <- preprocess_assay(fit, "DE")
+```
+
+It is possible to combine multiple contrasts, e.g. ‘treatment_1’ and
+‘treatment_2’ vs ‘control’;
+
+``` r
+mat_1 <- preprocess_assay(fit, "DE_treatment_1")
+mat_2 <- preprocess_assay(fit, "DE_treatment_2")
+
+mat <- compose_multi_view(
+    list("treatment_1" = mat_1, "treatment_2" = mat_2)
+    )
+```
+
+which enables biclustering under multiple contrasts. All subsequent
+steps support such a multi-view structure in principle.
+
+### Explore the number of factors
+
+The number of biclustering factors can be explored over a range of
+candidate values.
+
+``` r
+explorer <- explore_factors(
+    mat,
+    ks = c(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+    n_restarts = 5,
+    test_fraction = 0.1,
+    tol = 0.01
+)
+
+plot(explorer)
+```
+
+![](README_files/figure-commonmark/unnamed-chunk-4-1.png)
+
+`explore_factors()` is intended as an optional guidance rather than an
+automatic model-selection criterion and may suggest reasonable number of
+biclusters for the actual fitting procedure. There is generally no right
+or wrong number of bicluster candidates to be fit to the data. In the
+above example, $k=6$ is around a point of diminishing returns. A larger
+number of factors may result in biclusters with more mutual overlap in
+expressed genes and recruited cells but that differ in a subgroup of
+genes or cells.
+
+For this example we therefore continue with six factors.
+
+### Construct biclusters
+
+``` r
+biclustering <- biclust(
+    mat,
+    k = 6,
+    use_test = TRUE,
+    n_reps = 50,
+    tol = 0.005,
+    gene_support_thrs = 0.9,
+    cell_support_thrs = 0.9
+)
+```
+
+Each bicluster contains a weighted gene program together with cells
+associated with that program. Cell and gene membership is continuous
+rather than merely binary, allowing strongly and weakly associated
+members to be distinguished.
+
+The factorization is repeated to identify stable bicluster structure
+rather than relying on a single NMF solution.
+
+A reduced object
+
+``` r
+bics <- biclusters(biclustering)
+names(bics)
+```
+
+    [1] "F001" "F002" "F003" "F004" "F005" "F006"
+
+may be extracted, which contains named biclusters, and each bicluster
+contains named vectors of cell, gene and test cell loadings.
+
+## Visualizing cellular programs
+
+We can project the bicluster cell loadings onto a two-dimensional
+representation of the LEMUR embedding.
+
+``` r
+umap <- uwot::umap(t(fit$embedding))
+
+rownames(umap) <- colnames(fit$embedding)
+colnames(umap) <- c("UMAP1", "UMAP2")
+
+umap_df <- data.frame(
+    cell = rownames(umap),
+    UMAP1 = umap[, 1],
+    UMAP2 = umap[, 2]
+)
+
+plot_df <- dplyr::bind_rows(
+    lapply(names(bics), function(bic_name) {
+
+        bic <- bics[[bic_name]]
+
+        # Combine loadings from training and held-out cells
+        loadings <- c(
+            bic$cells,
+            bic$test
+        )
+
+        out <- umap_df
+        out$loading <- NA_real_
+
+        idx <- match(names(loadings), out$cell)
+        keep <- !is.na(idx)
+
+        out$loading[idx[keep]] <- loadings[keep]
+        out$bicluster <- bic_name
+
+        out
+    })
+)
+
+ggplot(
+    plot_df,
+    aes(x = UMAP1, y = UMAP2)
+) +
+    geom_point(
+        data = \(x) dplyr::filter(x, is.na(loading)),
+        color = "grey90",
+        size = 0.4
+    ) +
+    geom_point(
+        data = \(x) dplyr::filter(x, !is.na(loading)),
+        aes(color = loading),
+        size = 0.6
+    ) +
+    facet_wrap(
+        ~ bicluster,
+        ncol = 3
+    ) +
+    scale_color_viridis_c(
+        option = "magma",
+        name = "Cell loading"
+    ) +
+    coord_equal() +
+    theme_classic() +
+    theme(
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        strip.background = element_blank()
+    )
+```
+
+![](README_files/figure-commonmark/unnamed-chunk-7-1.png)
+
+This provides a first view of where each differential program occurs in
+the cellular state space. Cells not assigned to a given bicluster are
+shown in grey.
+
+## Bicluster composition
+
+Biclusters can be compared with experimental or biological annotations
+stored in the LEMUR object, e.g.
+
+``` r
+patients <- bicluster_composition(
+    bics,
+    fit,
+    "patient_id"
+)
+
+condition <- bicluster_composition(
+    bics,
+    fit,
+    "condition"
+)
+```
+
+and is returned as
+
+``` r
+head(patients, 5)
+```
+
+        variable label   n bic_size label_size fraction_bic fraction_label
+    1 patient_id PW030 117      609       1000    0.1921182          0.117
+    2 patient_id PW032 114      609       1000    0.1871921          0.114
+    3 patient_id PW034 112      609       1000    0.1839080          0.112
+    4 patient_id PW036 112      609       1000    0.1839080          0.112
+    5 patient_id PW040 154      609       1000    0.2528736          0.154
+      cell_slot bicluster
+    1      test      F001
+    2      test      F001
+    3      test      F001
+    4      test      F001
+    5      test      F001
+
+This is useful for determining whether a program is shared across
+patients, associated predominantly with one treatment condition, or
+concentrated in a particular annotated cell population if such
+annotations are available.
+
+## Differential expression within biclusters
+
+`bicluster_edgeR()` performs pseudobulk differential expression within
+each bicluster while retaining the experimental design.
+
+``` r
+biclustering <- bicluster_edgeR(
+    biclustering,
+    fit,
+    use_assay = "counts",
+    group_by = c("patient_id", "condition"),
+    design = ~ patient_id + condition,
+    contrast =
+        cond(condition = "panobinostat") -
+        cond(condition = "ctrl")
+)
+```
+
+Results are stored with the `BiclustResult` object:
+
+``` r
+head(analyses(biclustering)$edgeR$F001)
+```
+
+                        logFC    logCPM         F       PValue          FDR
+    ENSG00000120708 -3.590813  9.204034  89.60372 1.889570e-06 0.0005639791
+    ENSG00000245532  2.296266 10.935258 156.59555 3.759861e-06 0.0005639791
+    ENSG00000198668  1.437184 11.477083  97.34534 1.825659e-05 0.0018256589
+    ENSG00000125144  3.007539 10.942111  45.41711 5.050144e-05 0.0037556417
+    ENSG00000169715  2.322657 11.027602  47.04451 6.259403e-05 0.0037556417
+    ENSG00000091129 -1.964209 10.166571  60.63533 9.240072e-05 0.0040640251
+                               gene
+    ENSG00000120708 ENSG00000120708
+    ENSG00000245532 ENSG00000245532
+    ENSG00000198668 ENSG00000198668
+    ENSG00000125144 ENSG00000125144
+    ENSG00000169715 ENSG00000169715
+    ENSG00000091129 ENSG00000091129
+
+This allows the analysis to ask two related but different questions:
+
+- Which genes and cells define a differential program?
+- How does expression within those cells change between experimental
+  conditions?
+
+Alternatively, `bicluster_edgeR()` can be called with
+`bicluster_edgeR(bics, fit, ...)`, where
+`bics <- biclusters(biclustering)` is the reduced bicluster
+representation from above.
+
+## Gene-set enrichment
+
+The signed bicluster gene programs can also be tested against the
+corresponding differential-expression rankings using GSEA.
+
+``` r
+# | echo: false
+biclustering <- bicluster_gsea(biclustering)
+```
+
+      |                                                                            
+      |                                                                      |   0%
+      |                                                                            
+      |===================================                                   |  50%
+      |                                                                            
+      |======================================================================| 100%
+
+
+      |                                                                            
+      |                                                                      |   0%
+      |                                                                            
+      |===================================                                   |  50%
+      |                                                                            
+      |======================================================================| 100%
+
+
+      |                                                                            
+      |                                                                      |   0%
+      |                                                                            
+      |===================================                                   |  50%
+      |                                                                            
+      |======================================================================| 100%
+
+
+      |                                                                            
+      |                                                                      |   0%
+      |                                                                            
+      |===================================                                   |  50%
+      |                                                                            
+      |======================================================================| 100%
+
+
+      |                                                                            
+      |                                                                      |   0%
+      |                                                                            
+      |===================================                                   |  50%
+      |                                                                            
+      |======================================================================| 100%
+
+
+      |                                                                            
+      |                                                                      |   0%
+      |                                                                            
+      |===================================                                   |  50%
+      |                                                                            
+      |======================================================================| 100%
+
+``` r
+analyses(biclustering)$gsea
+```
+
+       bicluster      pathway         pval         padj   log2err         ES
+    1          1 default.down 1.004657e-03 1.004657e-03 0.4550599 -0.6809194
+    2          1   default.up 5.744636e-13 1.148927e-12 0.9214260  0.7934429
+    3          2 default.down 5.473836e-07 1.094767e-06 0.6594444 -0.8210458
+    4          2   default.up 1.421348e-06 1.421348e-06 0.6435518  0.7313166
+    5          3 default.down 7.623019e-10 1.524604e-09 0.8012156 -0.7586708
+    6          3   default.up 9.217133e-06 9.217133e-06 0.5933255  0.5838936
+    7          4 default.down 5.365140e-07 5.365140e-07 0.6594444 -0.8256334
+    8          4   default.up 1.382017e-08 2.764034e-08 0.7477397  0.7221215
+    9          5 default.down 6.018305e-06 1.203661e-05 0.6105269 -0.6741033
+    10         5   default.up 1.534564e-04 1.534564e-04 0.5188481  0.6254234
+    11         6 default.down 1.138109e-07 2.276218e-07 0.7049757 -0.7655392
+    12         6   default.up 1.295202e-04 1.295202e-04 0.5188481  0.6256039
+             NES size  leadingEdge
+    1  -1.771211   23 ENSG0000....
+    2   2.740511   44 ENSG0000....
+    3  -2.126061   24 ENSG0000....
+    4   2.231946   33 ENSG0000....
+    5  -2.416665   38 ENSG0000....
+    6   2.203157   41 ENSG0000....
+    7  -2.246946   19 ENSG0000....
+    8   2.406651   41 ENSG0000....
+    9  -2.136572   34 ENSG0000....
+    10  2.012643   28 ENSG0000....
+    11 -2.084357   37 ENSG0000....
+    12  2.017732   36 ENSG0000....
+
+Positive and negative sides of each bicluster are tested separately.
+This provides a program-level assessment of whether the structure
+identified by the biclustering is indeed enriched at the tail ends of
+the ranking of all differentially expressed genes, which would be the
+canonical expectation here. Further support for custom gene set
+enrichment within biclusters is planned, this would allow e.g. a pathway
+annotation of differential programmes.
+
+## Development status
+
+`lemurBiclust` is under active development.
+
+Version **0.1.0** represents the first functional research prototype of
+the core workflow. At this stage:
+
+- the core LEMUR-to-bicluster analysis is implemented;
+  - preprocessing and bundling of DE assays
+  - factor number exploration
+  - consensus NMF procedure for stable factorization
+  - automated post-hoc sparsification to remove noise and make
+    biclusters interpretable
+- held-out cells are projected onto the discovered programs;
+- bicluster composition can be inspected using cell-level metadata or
+  annotation;
+- bicluster-specific pseudobulk differential expression is available;
+- bicluster programs can be evaluated using gene-set enrichment
+  analysis.
+
+The API and internal data structures should be considered unstable.
+
+## Citation
+
+`lemurBiclust` is currently under development.
